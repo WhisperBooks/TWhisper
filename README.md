@@ -70,7 +70,7 @@ collects every library in its `dlls/` folder:
 ```
 git clone --recurse-submodules https://github.com/WhisperBooks/whisper-dev
 cd whisper-dev
-build.bat            (Windows, Developer PowerShell; ./build.sh on Linux / macOS)
+build.bat            (Windows, any prompt; ./build.sh on Linux / macOS)
 ```
 
 What it builds:
