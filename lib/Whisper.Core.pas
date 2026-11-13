@@ -278,6 +278,88 @@ type
     property OnProgress: TWhisperProgressEvent read FOnProgress write FOnProgress;
   end;
 
+  { A model is about to be timed on a device. }
+  TWhisperBenchmarkStartEvent = procedure(Sender: TObject; const AModelFile: string;
+    const ADevice: TWhisperDevice) of object;
+  { A device has been timed. }
+  TWhisperBenchmarkEvent = procedure(Sender: TObject; const AResult: TWhisperBenchmarkResult) of object;
+
+  { Times transcription with one or more models on several devices, to find
+    the fastest device (per model, or the fastest model / device pair) on
+    this machine. For each model and device: load the model onto it, run a short warm-up
+    (one-time costs: shader / kernel compilation, allocation), then a timed
+    run on the same audio. Runs on the calling thread and takes a while
+    (seconds per device, more for big models): use a worker thread or
+    @code(TCustomWhisper.BenchmarkDevicesAsync). Results are only
+    comparable for the same model, audio and settings, so time with the
+    model and kind of audio you will use. }
+  TWhisperBenchmark = class
+  private
+    { Backing field of @link(ModelFiles). }
+    FModelFiles: TStringList;
+    { Audio (mono, 16 kHz). }
+    FSamples: TWhisperSamples;
+    { Backing field of @link(Params). }
+    FParams: TWhisperParams;
+    { Backing field of @link(ContextParams). }
+    FContextParams: TWhisperContextParams;
+    { Backing field of @link(MaxSeconds). }
+    FMaxSeconds: Double;
+    { Backing field of @link(WarmupSeconds). }
+    FWarmupSeconds: Double;
+    { Set by Cancel. }
+    FCancel: Boolean;
+    { The run in progress (for Cancel). }
+    FCurrentRun: TWhisperRun;
+    { Backing field of @link(OnStart). }
+    FOnStart: TWhisperBenchmarkStartEvent;
+    { Backing field of @link(OnResult). }
+    FOnResult: TWhisperBenchmarkEvent;
+    { The first ASeconds of the audio. }
+    function Slice(ASeconds: Double): TWhisperSamples;
+  public
+    { A benchmark of AModelFile on ASamples (at least a few seconds of
+      speech; MaxSeconds of it are used). Add more models to ModelFiles to
+      compare them too.
+      @raises(EWhisperError when the library is not loaded or there is no audio.) }
+    constructor Create(const AModelFile: string; const ASamples: TWhisperSamples);
+    { Frees ModelFiles. }
+    destructor Destroy; override;
+    { Times every model of ModelFiles on every device of ADevices, model by
+      model (empty ADevices: all of @code(TWhisperLib.SelectableDevices)). A
+      pair that fails is reported (Ok = @false) and the next one is tried.
+      @returns(One result per pair timed (fewer when cancelled).) }
+    function Run(const ADevices: TWhisperDeviceArray): TWhisperBenchmarkArray;
+    { Times one model on one device. }
+    function RunOne(const AModelFile: string; const ADevice: TWhisperDevice): TWhisperBenchmarkResult;
+    { Stops after the run in progress (any thread). }
+    procedure Cancel;
+    { Index of the fastest successful result; -1 when none succeeded.
+      @param(AModelFile  '' = over every model (the fastest pair); a model
+        file = the fastest device for that model.) }
+    class function Best(const AResults: TWhisperBenchmarkArray; const AModelFile: string = ''): Integer; static;
+
+    { Models to time (the constructor's model is the first). }
+    property ModelFiles: TStringList read FModelFiles;
+    { Transcription settings of the runs (not owned; @nil = defaults with
+      language 'auto'). Use the settings you will use for real. }
+    property Params: TWhisperParams read FParams write FParams;
+    { Model loading settings (flash attention, ...); use_gpu and gpu_device
+      are set per device. Default: the library's defaults. }
+    property ContextParams: TWhisperContextParams read FContextParams write FContextParams;
+    { Seconds of audio in the timed run (default 30: one full encoder window,
+      the unit whisper.cpp works in). }
+    property MaxSeconds: Double read FMaxSeconds write FMaxSeconds;
+    { Seconds of audio in the warm-up run (default 5). }
+    property WarmupSeconds: Double read FWarmupSeconds write FWarmupSeconds;
+    { @true after Cancel. }
+    property Cancelled: Boolean read FCancel;
+    { Before each model / device pair (on the calling thread). }
+    property OnStart: TWhisperBenchmarkStartEvent read FOnStart write FOnStart;
+    { After each model / device pair (on the calling thread). }
+    property OnResult: TWhisperBenchmarkEvent read FOnResult write FOnResult;
+  end;
+
 { Text of a whisper_full result code. }
 function WhisperResultText(ACode: Integer): string;
 
@@ -292,6 +374,9 @@ function WhisperSegmentsToSrt(const ASegments: TWhisperSegmentArray): string;
 function WhisperSegmentsToVtt(const ASegments: TWhisperSegmentArray): string;
 
 implementation
+
+uses
+  Math;
 
 { C callbacks: user_data is the TWhisperRun. They must not let an exception
   escape into the library. }
@@ -726,6 +811,161 @@ begin
   end;
   if FHandlerError <> '' then
     raise EWhisperError.Create('An event handler raised during the transcription: ' + FHandlerError);
+end;
+
+{ TWhisperBenchmark }
+
+constructor TWhisperBenchmark.Create(const AModelFile: string; const ASamples: TWhisperSamples);
+const
+  DEFAULT_MAX_SECONDS = WHISPER_CHUNK_SIZE;
+  DEFAULT_WARMUP_SECONDS = 5;
+begin
+  inherited Create;
+  if Length(ASamples) = 0 then
+    raise EWhisperError.Create('A benchmark needs audio');
+  FModelFiles := TStringList.Create;
+  FModelFiles.Add(AModelFile);
+  FSamples := ASamples;
+  FContextParams := TWhisperLib.Instance.DefaultContextParams;
+  FMaxSeconds := DEFAULT_MAX_SECONDS;
+  FWarmupSeconds := DEFAULT_WARMUP_SECONDS;
+end;
+
+destructor TWhisperBenchmark.Destroy;
+begin
+  FreeAndNil(FModelFiles);
+  inherited;
+end;
+
+procedure TWhisperBenchmark.Cancel;
+var
+  R: TWhisperRun;
+begin
+  FCancel := True;
+  R := FCurrentRun;
+  if R <> nil then
+    R.Cancel;
+end;
+
+function TWhisperBenchmark.Slice(ASeconds: Double): TWhisperSamples;
+var
+  N: Integer;
+begin
+  N := Min(Length(FSamples), Max(1, Integer(Round(ASeconds * WHISPER_SAMPLE_RATE))));
+  Result := Copy(FSamples, 0, N);
+end;
+
+class function TWhisperBenchmark.Best(const AResults: TWhisperBenchmarkArray;
+  const AModelFile: string): Integer;
+var
+  I: Integer;
+begin
+  Result := -1;
+  for I := 0 to High(AResults) do
+    if AResults[I].Ok and ((AModelFile = '') or SameFileName(AResults[I].ModelFile, AModelFile)) and
+      ((Result < 0) or (AResults[I].Speed > AResults[Result].Speed)) then
+      Result := I;
+end;
+
+function TWhisperBenchmark.RunOne(const AModelFile: string;
+  const ADevice: TWhisperDevice): TWhisperBenchmarkResult;
+var
+  CP: TWhisperContextParams;
+  Model: TWhisperModel;
+  P: TWhisperParams;
+  R: TWhisperRun;
+  T: TWhisperTranscription;
+  Timed: TWhisperSamples;
+  Start: TDateTime;
+begin
+  Result.ModelFile := AModelFile;
+  Result.Device := ADevice;
+  Result.Ok := False;
+  Result.ErrorMessage := '';
+  Result.LoadMs := 0;
+  Result.WarmupMs := 0;
+  Result.RunMs := 0;
+  Result.AudioSeconds := 0;
+  Result.Speed := 0;
+  Result.Text := '';
+  CP := FContextParams;
+  if not TWhisperLib.Instance.ContextParamsFor(ADevice.Name, CP) then
+  begin
+    Result.ErrorMessage := Format('Device %s cannot be selected for whisper.cpp', [ADevice.Name]);
+    Exit;
+  end;
+  Model := nil;
+  P := nil;
+  R := nil;
+  try
+    try
+      Start := Now;
+      Model := TWhisperModel.Create(AModelFile, CP);
+      Result.LoadMs := MilliSecondsBetween(Now, Start);
+      P := TWhisperParams.Create;
+      if FParams <> nil then
+        P.Assign(FParams);
+      R := TWhisperRun.Create(Model, P);
+      FCurrentRun := R;
+      if FCancel then
+        Exit;
+      T := R.Execute(Slice(FWarmupSeconds));
+      Result.WarmupMs := T.ElapsedMs;
+      if T.ErrorMessage <> '' then
+        raise EWhisperError.Create('Warm-up run failed: ' + T.ErrorMessage);
+      if FCancel then
+        Exit;
+      Timed := Slice(FMaxSeconds);
+      T := R.Execute(Timed);
+      if T.ErrorMessage <> '' then
+        raise EWhisperError.Create('Timed run failed: ' + T.ErrorMessage);
+      if T.Cancelled then
+        Exit;
+      Result.RunMs := T.ElapsedMs;
+      Result.AudioSeconds := Length(Timed) / WHISPER_SAMPLE_RATE;
+      Result.Speed := Result.AudioSeconds * 1000 / Max(Int64(1), Result.RunMs);
+      Result.Text := Trim(WhisperSegmentsToText(T.Segments));
+      Result.Ok := True;
+    except
+      on E: Exception do
+        Result.ErrorMessage := E.Message;
+    end;
+  finally
+    FCurrentRun := nil;
+    R.Free;
+    P.Free;
+    Model.Free;
+  end;
+end;
+
+function TWhisperBenchmark.Run(const ADevices: TWhisperDeviceArray): TWhisperBenchmarkArray;
+var
+  Devs: TWhisperDeviceArray;
+  I, M, N: Integer;
+begin
+  Result := nil;
+  FCancel := False;
+  if Length(ADevices) = 0 then
+    Devs := TWhisperLib.Instance.SelectableDevices
+  else
+    Devs := ADevices;
+  SetLength(Result, Length(Devs) * FModelFiles.Count);
+  N := 0;
+  for M := 0 to FModelFiles.Count - 1 do
+    for I := 0 to High(Devs) do
+    begin
+      if FCancel then
+        Break;
+      if Assigned(FOnStart) then
+        FOnStart(Self, FModelFiles[M], Devs[I]);
+      Result[N] := RunOne(FModelFiles[M], Devs[I]);
+      if FCancel and not Result[N].Ok then
+        Break;   // cancelled mid-run: not a result
+      Inc(N);
+      if Assigned(FOnResult) then
+        FOnResult(Self, Result[N - 1]);
+    end;
+  SetLength(Result, N);
 end;
 
 end.

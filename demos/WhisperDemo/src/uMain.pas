@@ -1,6 +1,7 @@
-{ @abstract(Main form of WhisperDemo: model and WAV selection, transcription
-  on a worker thread with live segments, progress and the library log, and
-  export as text / SubRip / WebVTT.)
+{ @abstract(Main form of WhisperDemo: model, WAV and compute-device
+  selection, a device benchmark, transcription on a worker thread with live
+  segments, progress and the library log, and export as text / SubRip /
+  WebVTT.)
 
   The TWhisper component (Whisper1) and its events are set up in
   uMain.fmx; only the settings file and the language list are handled in
@@ -25,11 +26,11 @@ type
     Whisper1: TWhisper;
     { Top panel with the settings and buttons. }
     layTop: TLayout;
-    { Caption of edModel. }
+    { Caption of cbModel. }
     lblModel: TLabel;
-    { ggml model file. }
-    edModel: TEdit;
-    { Browses for the model. }
+    { Models (ggml-*.bin) of the model folder. }
+    cbModel: TComboBox;
+    { Browses for a model (its folder becomes the model folder). }
     btnModel: TButton;
     { Caption of edAudio. }
     lblAudio: TLabel;
@@ -43,8 +44,14 @@ type
     cbLanguage: TComboBox;
     { Translate to English. }
     chkTranslate: TCheckBox;
-    { Use the GPU backend (applies when the model is loaded). }
-    chkGPU: TCheckBox;
+    { Caption of cbDevice. }
+    lblDevice: TLabel;
+    { Compute device (applies when the model is loaded). }
+    cbDevice: TComboBox;
+    { Times every device and selects the fastest. }
+    btnBenchmark: TButton;
+    { Benchmark every model of the folder, not only the selected one. }
+    chkAllModels: TCheckBox;
     { Loads / unloads the model. }
     btnLoad: TButton;
     { Starts the transcription. }
@@ -83,6 +90,13 @@ type
     procedure btnCancelClick(Sender: TObject);
     { Saves the segments as .txt, .srt or .vtt. }
     procedure btnSaveClick(Sender: TObject);
+    { Starts the device benchmark on the WAV file. }
+    procedure btnBenchmarkClick(Sender: TObject);
+    { A benchmark timed a device. }
+    procedure Whisper1BenchmarkResult(Sender: TObject; const AResult: TWhisperBenchmarkResult);
+    { The benchmark finished: selects the fastest device. }
+    procedure Whisper1BenchmarkComplete(Sender: TObject; const AResults: TWhisperBenchmarkArray;
+      ABest: Integer);
     { The model is loaded. }
     procedure Whisper1Loaded(Sender: TObject);
     { The library or the model could not be loaded. }
@@ -100,6 +114,23 @@ type
   private
     { Segments of the last run (for Save). }
     FSegments: TWhisperSegmentArray;
+    { Device name of each cbDevice item ('' = default). }
+    FDeviceNames: TStringList;
+    { Folder of the models listed in cbModel. }
+    FModelFolder: string;
+    { Lists the ggml-*.bin models of AFolder in cbModel and selects ASelect
+      (a file name; '' = the first). }
+    procedure FillModels(const AFolder, ASelect: string);
+    { Selects the model file AFileName (full path) in cbModel. }
+    procedure SelectModel(const AFileName: string);
+    { Full path of the model selected in cbModel ('' when none). }
+    function SelectedModel: string;
+    { Fills cbDevice from the loaded backends. }
+    procedure FillDevices;
+    { Selects the device named AName in cbDevice ('' = default). }
+    procedure SelectDevice(const AName: string);
+    { Name of the device selected in cbDevice. }
+    function SelectedDevice: string;
     { Writes a line to memLog. }
     procedure AddLog(const AText: string);
     { Enables the buttons that fit the state. }
@@ -135,6 +166,10 @@ const
   LEVEL_NAMES: array[TWhisperLogLevel] of string = ('', 'debug', 'info', 'warn', 'ERROR', '');
   { Progress bar maximum (percent). }
   PROGRESS_MAX = 100;
+  { Seconds of audio the benchmark times per device. }
+  BENCHMARK_SECONDS = 30;
+  { Text of the default device item. }
+  DEFAULT_DEVICE_TEXT = 'Default (whisper.cpp: first GPU)';
 
 procedure TfrmMain.FormCreate(Sender: TObject);
 var
@@ -156,6 +191,8 @@ begin
     Codes.Free;
   end;
   cbLanguage.ItemIndex := 0;
+  FDeviceNames := TStringList.Create;
+  FillDevices;
   LoadSettings;
   UpdateControls;
 end;
@@ -164,6 +201,98 @@ procedure TfrmMain.FormClose(Sender: TObject; var Action: TCloseAction);
 begin
   SaveSettings;
   Whisper1.Cancel;
+  FreeAndNil(FDeviceNames);
+end;
+
+procedure TfrmMain.FillModels(const AFolder, ASelect: string);
+var
+  Files: TStringDynArray;
+  I, Idx: Integer;
+  Name: string;
+begin
+  FModelFolder := AFolder;
+  cbModel.Items.Clear;
+  if (AFolder <> '') and TDirectory.Exists(AFolder) then
+  begin
+    Files := TDirectory.GetFiles(AFolder, 'ggml-*.bin');
+    for I := 0 to High(Files) do
+    begin
+      Name := ExtractFileName(Files[I]);
+      // VAD models (ggml-silero-*.bin) are not transcription models
+      if not ContainsText(Name, 'silero') then
+        cbModel.Items.Add(Name);
+    end;
+  end;
+  Idx := cbModel.Items.IndexOf(ASelect);
+  if (Idx < 0) and (cbModel.Items.Count > 0) then
+    Idx := 0;
+  cbModel.ItemIndex := Idx;
+  AddLog(Format('%d model(s) in %s', [cbModel.Items.Count, AFolder]));
+end;
+
+procedure TfrmMain.SelectModel(const AFileName: string);
+var
+  Idx: Integer;
+begin
+  if not SameFileName(ExcludeTrailingPathDelimiter(ExtractFilePath(AFileName)),
+    ExcludeTrailingPathDelimiter(FModelFolder)) then
+    FillModels(ExtractFilePath(AFileName), ExtractFileName(AFileName))
+  else
+  begin
+    Idx := cbModel.Items.IndexOf(ExtractFileName(AFileName));
+    if Idx >= 0 then
+      cbModel.ItemIndex := Idx;
+  end;
+end;
+
+function TfrmMain.SelectedModel: string;
+begin
+  if cbModel.ItemIndex >= 0 then
+    Result := TPath.Combine(FModelFolder, cbModel.Items[cbModel.ItemIndex])
+  else
+    Result := '';
+end;
+
+procedure TfrmMain.FillDevices;
+var
+  Devs: TWhisperDeviceArray;
+  I: Integer;
+begin
+  cbDevice.Items.Clear;
+  FDeviceNames.Clear;
+  cbDevice.Items.Add(DEFAULT_DEVICE_TEXT);
+  FDeviceNames.Add('');
+  Devs := Whisper1.SelectableDevices;
+  for I := 0 to High(Devs) do
+  begin
+    cbDevice.Items.Add(WhisperDeviceText(Devs[I]));
+    FDeviceNames.Add(Devs[I].Name);
+  end;
+  cbDevice.ItemIndex := 0;
+  AddLog(Format('%d selectable device(s)', [Length(Devs)]));
+end;
+
+procedure TfrmMain.SelectDevice(const AName: string);
+var
+  Idx: Integer;
+begin
+  Idx := FDeviceNames.IndexOf(AName);
+  if Idx >= 0 then
+    cbDevice.ItemIndex := Idx
+  else
+  begin
+    cbDevice.ItemIndex := 0;
+    if AName <> '' then
+      AddLog('Saved device ' + AName + ' is not available now - using the default');
+  end;
+end;
+
+function TfrmMain.SelectedDevice: string;
+begin
+  if (cbDevice.ItemIndex >= 0) and (cbDevice.ItemIndex < FDeviceNames.Count) then
+    Result := FDeviceNames[cbDevice.ItemIndex]
+  else
+    Result := '';
 end;
 
 procedure TfrmMain.AddLog(const AText: string);
@@ -176,9 +305,10 @@ procedure TfrmMain.UpdateControls;
 begin
   btnLoad.Text := IfThen(Whisper1.Active, 'Unload model', 'Load model');
   btnLoad.Enabled := not Whisper1.Busy;
-  edModel.Enabled := not Whisper1.Active;
+  cbModel.Enabled := not Whisper1.Active;
   btnModel.Enabled := not Whisper1.Active;
-  chkGPU.Enabled := not Whisper1.Active;
+  cbDevice.Enabled := not Whisper1.Active;
+  btnBenchmark.Enabled := not Whisper1.Busy;
   btnTranscribe.Enabled := Whisper1.Active and not Whisper1.Busy;
   btnCancel.Enabled := Whisper1.Busy;
   btnSave.Enabled := (Length(FSegments) > 0) and not Whisper1.Busy;
@@ -219,10 +349,12 @@ begin
   end;
   Ini := TMemIniFile.Create(SettingsFile, TEncoding.UTF8);
   try
-    edModel.Text := Ini.ReadString(SETTINGS_SECTION, 'Model', '');
+    FillModels(Ini.ReadString(SETTINGS_SECTION, 'ModelFolder', ''),
+      Ini.ReadString(SETTINGS_SECTION, 'Model', ''));
+    chkAllModels.IsChecked := Ini.ReadBool(SETTINGS_SECTION, 'BenchmarkAllModels', False);
     edAudio.Text := Ini.ReadString(SETTINGS_SECTION, 'Audio', '');
     chkTranslate.IsChecked := Ini.ReadBool(SETTINGS_SECTION, 'Translate', False);
-    chkGPU.IsChecked := Ini.ReadBool(SETTINGS_SECTION, 'UseGPU', True);
+    SelectDevice(Ini.ReadString(SETTINGS_SECTION, 'Device', ''));
     Lang := Ini.ReadString(SETTINGS_SECTION, 'Language', WHISPER_LANGUAGE_AUTO);
     Idx := cbLanguage.Items.IndexOf(Lang);
     if Idx >= 0 then
@@ -241,10 +373,13 @@ begin
     TDirectory.CreateDirectory(SettingsFolder);
     Ini := TMemIniFile.Create(SettingsFile, TEncoding.UTF8);
     try
-      Ini.WriteString(SETTINGS_SECTION, 'Model', edModel.Text);
+      Ini.WriteString(SETTINGS_SECTION, 'ModelFolder', FModelFolder);
+      if cbModel.ItemIndex >= 0 then
+        Ini.WriteString(SETTINGS_SECTION, 'Model', cbModel.Items[cbModel.ItemIndex]);
+      Ini.WriteBool(SETTINGS_SECTION, 'BenchmarkAllModels', chkAllModels.IsChecked);
       Ini.WriteString(SETTINGS_SECTION, 'Audio', edAudio.Text);
       Ini.WriteBool(SETTINGS_SECTION, 'Translate', chkTranslate.IsChecked);
-      Ini.WriteBool(SETTINGS_SECTION, 'UseGPU', chkGPU.IsChecked);
+      Ini.WriteString(SETTINGS_SECTION, 'Device', SelectedDevice);
       if cbLanguage.ItemIndex >= 0 then
         Ini.WriteString(SETTINGS_SECTION, 'Language', cbLanguage.Items[cbLanguage.ItemIndex]);
       Ini.UpdateFile;
@@ -260,9 +395,9 @@ end;
 procedure TfrmMain.btnModelClick(Sender: TObject);
 begin
   OpenDialog1.Filter := 'ggml models (*.bin)|*.bin|All files (*.*)|*.*';
-  OpenDialog1.FileName := edModel.Text;
+  OpenDialog1.FileName := SelectedModel;
   if OpenDialog1.Execute then
-    edModel.Text := OpenDialog1.FileName;
+    FillModels(ExtractFilePath(OpenDialog1.FileName), ExtractFileName(OpenDialog1.FileName));
 end;
 
 procedure TfrmMain.btnAudioClick(Sender: TObject);
@@ -279,8 +414,8 @@ begin
     Whisper1.Active := False
   else
   begin
-    Whisper1.ModelFile := edModel.Text;
-    Whisper1.UseGPU := chkGPU.IsChecked;
+    Whisper1.ModelFile := SelectedModel;
+    Whisper1.Device := SelectedDevice;
     AddLog('Loading ' + Whisper1.ModelFile);
     Whisper1.Active := True;   // OnLoaded or OnLoadFailed follows
   end;
@@ -331,8 +466,78 @@ begin
   AddLog(Format('Saved %d segment(s) to %s', [Length(FSegments), SaveDialog1.FileName]));
 end;
 
+procedure TfrmMain.btnBenchmarkClick(Sender: TObject);
+var
+  Models: TStringList;
+  I: Integer;
+begin
+  Whisper1.ModelFile := SelectedModel;
+  if cbLanguage.ItemIndex >= 0 then
+    Whisper1.Language := cbLanguage.Items[cbLanguage.ItemIndex];
+  Whisper1.Translate := chkTranslate.IsChecked;
+  Models := TStringList.Create;
+  try
+    if chkAllModels.IsChecked then
+      for I := 0 to cbModel.Items.Count - 1 do
+        Models.Add(TPath.Combine(FModelFolder, cbModel.Items[I]))
+    else if SelectedModel <> '' then
+      Models.Add(SelectedModel);
+    memText.Lines.Clear;
+    memText.Lines.Add(Format('Benchmark: %d model(s), first %d s of %s on every device',
+      [Models.Count, BENCHMARK_SECONDS, ExtractFileName(edAudio.Text)]));
+    try
+      Whisper1.BenchmarkFileAsync(edAudio.Text, BENCHMARK_SECONDS, nil, Models);
+      lblStatus.Text := 'Benchmark';
+    except
+      on E: Exception do
+        AddLog('Cannot start the benchmark: ' + E.Message);
+    end;
+  finally
+    Models.Free;
+  end;
+  UpdateControls;
+end;
+
+procedure TfrmMain.Whisper1BenchmarkResult(Sender: TObject; const AResult: TWhisperBenchmarkResult);
+begin
+  if AResult.Ok then
+    memText.Lines.Add(Format('%-24s %-10s %6.2fx real time   (load %d ms, warm-up %d ms, run %d ms)  %s',
+      [ExtractFileName(AResult.ModelFile), AResult.Device.Name, AResult.Speed, AResult.LoadMs,
+       AResult.WarmupMs, AResult.RunMs, Copy(AResult.Text, 1, 60)]))
+  else
+    memText.Lines.Add(Format('%-24s %-10s failed: %s', [ExtractFileName(AResult.ModelFile),
+      AResult.Device.Name, AResult.ErrorMessage]));
+end;
+
+procedure TfrmMain.Whisper1BenchmarkComplete(Sender: TObject; const AResults: TWhisperBenchmarkArray;
+  ABest: Integer);
+begin
+  lblStatus.Text := IfThen(Whisper1.Active, 'Ready', 'No model');
+  if ABest >= 0 then
+  begin
+    // Speed alone does not pick a model (bigger ones are more accurate): with
+    // several models timed, the fastest device of the SELECTED model is used.
+    if not SameFileName(AResults[ABest].ModelFile, SelectedModel) and
+      (TWhisperBenchmark.Best(AResults, SelectedModel) >= 0) then
+    begin
+      memText.Lines.Add(Format('Fastest overall: %s on %s (%.2fx)', [ExtractFileName(AResults[ABest].ModelFile),
+        AResults[ABest].Device.Name, AResults[ABest].Speed]));
+      ABest := TWhisperBenchmark.Best(AResults, SelectedModel);
+    end;
+    SelectModel(AResults[ABest].ModelFile);
+    SelectDevice(AResults[ABest].Device.Name);
+    memText.Lines.Add(Format('Selected: %s on %s (%.2fx real time)%s', [ExtractFileName(AResults[ABest].ModelFile),
+      AResults[ABest].Device.Name, AResults[ABest].Speed,
+      IfThen(Whisper1.Active, ' - unload and load the model to use it', '')]));
+  end
+  else
+    memText.Lines.Add('No device succeeded');
+  UpdateControls;
+end;
+
 procedure TfrmMain.Whisper1Loaded(Sender: TObject);
 begin
+  AddLog('Model running on ' + Whisper1.ActiveDevice);
   lblStatus.Text := 'Ready';
   UpdateControls;
 end;

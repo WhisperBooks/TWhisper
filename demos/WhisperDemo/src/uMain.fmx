@@ -13,7 +13,7 @@ object frmMain: TfrmMain
   object layTop: TLayout
     Align = Top
     Size.Width = 960.000000000000000000
-    Size.Height = 136.000000000000000000
+    Size.Height = 168.000000000000000000
     Size.PlatformDefault = False
     object lblModel: TLabel
       Position.X = 8.000000000000000000
@@ -23,7 +23,7 @@ object frmMain: TfrmMain
       Size.PlatformDefault = False
       Text = 'Model'
     end
-    object edModel: TEdit
+    object cbModel: TComboBox
       Anchors = [akLeft, akTop, akRight]
       Position.X = 100.000000000000000000
       Position.Y = 8.000000000000000000
@@ -96,16 +96,6 @@ object frmMain: TfrmMain
       TabOrder = 5
       Text = 'Translate to English'
     end
-    object chkGPU: TCheckBox
-      Position.X = 380.000000000000000000
-      Position.Y = 74.000000000000000000
-      Size.Width = 90.000000000000000000
-      Size.Height = 20.000000000000000000
-      Size.PlatformDefault = False
-      TabOrder = 6
-      IsChecked = True
-      Text = 'Use GPU'
-    end
     object btnLoad: TButton
       Position.X = 480.000000000000000000
       Position.Y = 72.000000000000000000
@@ -146,9 +136,47 @@ object frmMain: TfrmMain
       Text = 'Save as...'
       OnClick = btnSaveClick
     end
-    object lblStatus: TLabel
+    object lblDevice: TLabel
       Position.X = 8.000000000000000000
       Position.Y = 106.000000000000000000
+      Size.Width = 88.000000000000000000
+      Size.Height = 22.000000000000000000
+      Size.PlatformDefault = False
+      Text = 'Device'
+    end
+    object cbDevice: TComboBox
+      Anchors = [akLeft, akTop, akRight]
+      Position.X = 100.000000000000000000
+      Position.Y = 104.000000000000000000
+      Size.Width = 600.000000000000000000
+      Size.Height = 24.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 13
+    end
+    object chkAllModels: TCheckBox
+      Anchors = [akTop, akRight]
+      Position.X = 708.000000000000000000
+      Position.Y = 106.000000000000000000
+      Size.Width = 136.000000000000000000
+      Size.Height = 20.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 15
+      Text = 'Benchmark all models'
+    end
+    object btnBenchmark: TButton
+      Anchors = [akTop, akRight]
+      Position.X = 852.000000000000000000
+      Position.Y = 104.000000000000000000
+      Size.Width = 100.000000000000000000
+      Size.Height = 24.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 14
+      Text = 'Benchmark'
+      OnClick = btnBenchmarkClick
+    end
+    object lblStatus: TLabel
+      Position.X = 8.000000000000000000
+      Position.Y = 138.000000000000000000
       Size.Width = 88.000000000000000000
       Size.Height = 22.000000000000000000
       Size.PlatformDefault = False
@@ -157,7 +185,7 @@ object frmMain: TfrmMain
     object ProgressBar1: TProgressBar
       Anchors = [akLeft, akTop, akRight]
       Position.X = 100.000000000000000000
-      Position.Y = 108.000000000000000000
+      Position.Y = 140.000000000000000000
       Size.Width = 852.000000000000000000
       Size.Height = 18.000000000000000000
       Size.PlatformDefault = False
@@ -199,6 +227,8 @@ object frmMain: TfrmMain
     OnProgress = Whisper1Progress
     OnComplete = Whisper1Complete
     OnLog = Whisper1Log
+    OnBenchmarkResult = Whisper1BenchmarkResult
+    OnBenchmarkComplete = Whisper1BenchmarkComplete
     Left = 848
     Top = 168
   end

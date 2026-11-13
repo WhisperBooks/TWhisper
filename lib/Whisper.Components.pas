@@ -19,7 +19,17 @@
   thread through TThread.Queue (a console program must call
   CheckSynchronize). @link(TCustomWhisper.Transcribe) runs on the calling
   thread and fires the events there. One transcription at a time per
-  component (@link(TCustomWhisper.Busy)). *)
+  component (@link(TCustomWhisper.Busy)).
+
+  @bold(Devices.) @link(TCustomWhisper.Device) names the compute device
+  the model is loaded onto ('CPU', 'CUDA0', 'Vulkan1', ...; '' =
+  whisper.cpp's default: the first GPU when UseGPU). An unknown name falls
+  back to the default with a warning in OnLog, so a program keeps working
+  when a GPU or its driver disappears. @link(TCustomWhisper.Devices) lists
+  what the loaded backends offer; @link(TCustomWhisper.BenchmarkFileAsync)
+  times them - for ModelFile or for several models - and reports the
+  fastest (OnBenchmarkComplete), for the program to store in Device (and
+  ModelFile). *)
 unit Whisper.Components;
 
 {$I Whisper.inc}
@@ -33,9 +43,11 @@ uses
 {$ifndef FPC}
 const
   { Platforms of the Whisper components (ComponentPlatformsAttribute):
-    every platform whisper.cpp builds a shared library for that Delphi
-    targets with this binding. }
-  WHISPER_COMPONENT_PLATFORMS = pidWin32 or pidWin64 or pidOSX64 or pidOSXArm64 or pidLinux64 or
+    64-bit only. No Win32: there is no 32-bit whisper.dll to ship (ggml
+    1.9.5 does not link for 32-bit MSVC - _pdep_u64 is x64-only - and the
+    owner does not ship 32-bit). lib/ still compiles for Win32, which a
+    32-bit IDE needs to load the design-time package. }
+  WHISPER_COMPONENT_PLATFORMS = pidWin64 or pidOSX64 or pidOSXArm64 or pidLinux64 or
     pidAndroidArm64;
 {$endif}
 
@@ -46,6 +58,12 @@ type
   TWhisperFailedEvent = procedure(Sender: TObject; const AMessage: string) of object;
   { A transcription finished (also when cancelled or failed: see the record). }
   TWhisperCompleteEvent = procedure(Sender: TObject; const AResult: TWhisperTranscription) of object;
+  { A benchmark finished: every result and the index of the fastest
+    successful model / device pair (-1 when none succeeded or it was
+    cancelled before any); @code(TWhisperBenchmark.Best) with a model file
+    gives the fastest device of one model. }
+  TWhisperBenchmarkCompleteEvent = procedure(Sender: TObject; const AResults: TWhisperBenchmarkArray;
+    ABest: Integer) of object;
   { Last chance to change the settings of a run (main thread, before the
     worker starts). }
   TWhisperBeforeRunEvent = procedure(Sender: TObject; AParams: TWhisperParams) of object;
@@ -59,7 +77,13 @@ type
     { A log line. }
     wmkLog,
     { The run finished. }
-    wmkComplete
+    wmkComplete,
+    { The benchmark starts a model / device pair. }
+    wmkBenchDevice,
+    { The benchmark timed a device. }
+    wmkBenchResult,
+    { The benchmark finished. }
+    wmkBenchComplete
   );
 
   { One event moved from a worker thread to the main thread. Frees itself
@@ -80,6 +104,16 @@ type
     FText: string;
     { Result (wmkComplete). }
     FResult: TWhisperTranscription;
+    { Device (wmkBenchDevice). }
+    FDevice: TWhisperDevice;
+    { Model file (wmkBenchDevice). }
+    FModelFile: string;
+    { One benchmark result (wmkBenchResult). }
+    FBench: TWhisperBenchmarkResult;
+    { Every benchmark result (wmkBenchComplete). }
+    FBenchResults: TWhisperBenchmarkArray;
+    { Index of the fastest (wmkBenchComplete). }
+    FBest: Integer;
   public
     { Runs on the main thread: hands itself to the component, then frees itself. }
     procedure Deliver;
@@ -115,6 +149,50 @@ type
     procedure Cancel;
   end;
 
+  { Worker thread of one asynchronous benchmark. }
+  TWhisperBenchmarkWorker = class(TThread)
+  private
+    { The component. }
+    FOwner: TCustomWhisper;
+    { The benchmark (owned; created in Execute once the audio is read). }
+    FBench: TWhisperBenchmark;
+    { Settings of the runs (owned). }
+    FParams: TWhisperParams;
+    { Model loading settings. }
+    FContextParams: TWhisperContextParams;
+    { Model files (owned copy). }
+    FModelFiles: TStringList;
+    { Audio, when given directly. }
+    FSamples: TWhisperSamples;
+    { WAV file to read, when given as a file. }
+    FFileName: string;
+    { Seconds of audio per timed run. }
+    FMaxSeconds: Double;
+    { Devices to time (empty = all selectable). }
+    FDevices: TWhisperDeviceArray;
+    { Set by Cancel before FBench exists. }
+    FCancel: Boolean;
+    { Guards FBench against Cancel. }
+    FLock: TCriticalSection;
+    { Benchmark's OnStart: queues the model and device. }
+    procedure BenchDevice(Sender: TObject; const AModelFile: string; const ADevice: TWhisperDevice);
+    { Benchmark's OnResult: queues the result. }
+    procedure BenchResult(Sender: TObject; const AResult: TWhisperBenchmarkResult);
+  protected
+    { Reads the audio (if a file), times the devices, queues the outcome. }
+    procedure Execute; override;
+  public
+    { A suspended worker; the component starts it. }
+    constructor Create(AOwner: TCustomWhisper; AParams: TWhisperParams;
+      const AContextParams: TWhisperContextParams; AModelFiles: TStrings;
+      const ASamples: TWhisperSamples; const AFileName: string; AMaxSeconds: Double;
+      const ADevices: TWhisperDeviceArray);
+    { Frees the benchmark, the params and the model list. }
+    destructor Destroy; override;
+    { Stops after the run in progress. }
+    procedure Cancel;
+  end;
+
   { Framework-free whisper.cpp component. See the unit description. }
   TCustomWhisper = class(TComponent)
   private
@@ -132,6 +210,18 @@ type
     FFlashAttention: Boolean;
     { Backing field of @link(GPUDevice). }
     FGPUDevice: Integer;
+    { Backing field of @link(Device). }
+    FDevice: string;
+    { Name of the device the model was loaded onto. }
+    FActiveDevice: string;
+    { Worker of the benchmark in progress. }
+    FBenchWorker: TWhisperBenchmarkWorker;
+    { Backing field of @link(OnBenchmarkStart). }
+    FOnBenchmarkStart: TWhisperBenchmarkStartEvent;
+    { Backing field of @link(OnBenchmarkResult). }
+    FOnBenchmarkResult: TWhisperBenchmarkEvent;
+    { Backing field of @link(OnBenchmarkComplete). }
+    FOnBenchmarkComplete: TWhisperBenchmarkCompleteEvent;
     { Backing field of @link(DtwPreset). }
     FDtwPreset: TWhisperAlignmentHeadsPreset;
     { Backing field of @link(CheckLayout). }
@@ -212,6 +302,15 @@ type
     function BuildRunParams: TWhisperParams;
     { Starts a worker for samples or a file. }
     procedure StartWorker(const ASamples: TWhisperSamples; const AFileName: string);
+    { Context params from UseGPU, GPUDevice, FlashAttention, DtwPreset and
+      Device; ADeviceUsed receives the device they select. }
+    function BuildContextParams(ALib: TWhisperLib; out ADeviceUsed: string): TWhisperContextParams;
+    { Starts a benchmark worker for samples or a file. }
+    procedure StartBenchmark(const ASamples: TWhisperSamples; const AFileName: string;
+      AMaxSeconds: Double; const ADevices: TWhisperDeviceArray; AModelFiles: TStrings);
+    { Starts the benchmark worker for a non-empty model list. }
+    procedure StartBenchmarkWorker(const ASamples: TWhisperSamples; const AFileName: string;
+      AMaxSeconds: Double; const ADevices: TWhisperDeviceArray; AModels: TStringList);
     { Run's OnSegment for synchronous runs. }
     procedure SyncSegment(Sender: TObject; const ASegment: TWhisperSegment);
     { Run's OnProgress for synchronous runs. }
@@ -235,7 +334,7 @@ type
     { Defaults: UseGPU, FlashAttention, CheckLayout on; Language 'auto';
       greedy decoding; LogLevel info. }
     constructor Create(AOwner: TComponent); override;
-    { Cancels a run in progress, waits for it and unloads the model. }
+    { Cancels a run or benchmark in progress, waits for it and unloads the model. }
     destructor Destroy; override;
 
     { Transcribes on the calling thread; events fire on that thread.
@@ -251,8 +350,29 @@ type
     { Reads a WAV file and transcribes it on a worker thread. A file that
       cannot be read ends with OnComplete (ErrorMessage set). }
     procedure TranscribeFileAsync(const AFileName: string);
-    { Asks the run in progress to stop; OnComplete follows with Cancelled. }
+    { Asks the run or benchmark in progress to stop; OnComplete (Cancelled)
+      or OnBenchmarkComplete follows. }
     procedure Cancel;
+
+    { Every device of the loaded backends (loads the library when needed;
+      empty when it cannot be loaded - the reason goes to OnLog). }
+    function Devices: TWhisperDeviceArray;
+    { The devices Device can name: the CPU, then every GPU / IGPU. }
+    function SelectableDevices: TWhisperDeviceArray;
+    { Times transcription of the first AMaxSeconds of ASamples with each
+      model of AModelFiles (@nil or empty = ModelFile) on each of ADevices
+      (empty = all selectable), on a worker thread, with the published
+      settings (Active not needed; each model is loaded once per device,
+      besides any active one). OnBenchmarkStart, OnBenchmarkResult and
+      OnBenchmarkComplete follow on the main thread.
+      @raises(EWhisperError when busy or there is no model.) }
+    procedure BenchmarkAsync(const ASamples: TWhisperSamples; AMaxSeconds: Double;
+      const ADevices: TWhisperDeviceArray; AModelFiles: TStrings = nil);
+    { BenchmarkAsync on a WAV file, read on the worker thread. }
+    procedure BenchmarkFileAsync(const AFileName: string; AMaxSeconds: Double;
+      const ADevices: TWhisperDeviceArray; AModelFiles: TStrings = nil);
+    { Name of the device the active model runs on ('' while not active). }
+    property ActiveDevice: string read FActiveDevice;
 
     { Codes of every language the library knows ('en', 'zh', ...), loading
       the library when needed; empty when it cannot be loaded. }
@@ -279,6 +399,10 @@ type
     property FlashAttention: Boolean read FFlashAttention write FFlashAttention default True;
     { GPU device index. Applies on activation. }
     property GPUDevice: Integer read FGPUDevice write FGPUDevice default 0;
+    { Compute device by name: 'CPU', 'CUDA0', 'Vulkan1', ... (see Devices);
+      '' = UseGPU / GPUDevice decide. Overrides them when set. An unknown
+      name falls back to them with a warning. Applies on activation. }
+    property Device: string read FDevice write FDevice;
     { DTW token time stamps: the preset of the model in use (wahNone = off).
       Applies on activation. }
     property DtwPreset: TWhisperAlignmentHeadsPreset read FDtwPreset write FDtwPreset default wahNone;
@@ -332,6 +456,13 @@ type
     property OnComplete: TWhisperCompleteEvent read FOnComplete write FOnComplete;
     { Log lines of whisper.cpp / ggml and of the component. }
     property OnLog: TWhisperLogEvent read FOnLog write FOnLog;
+    { A benchmark starts a model / device pair. }
+    property OnBenchmarkStart: TWhisperBenchmarkStartEvent read FOnBenchmarkStart write FOnBenchmarkStart;
+    { A benchmark timed a model / device pair. }
+    property OnBenchmarkResult: TWhisperBenchmarkEvent read FOnBenchmarkResult write FOnBenchmarkResult;
+    { A benchmark finished. }
+    property OnBenchmarkComplete: TWhisperBenchmarkCompleteEvent read FOnBenchmarkComplete
+      write FOnBenchmarkComplete;
   end;
 
 implementation
@@ -442,6 +573,115 @@ begin
   FOwner.Post(M);
 end;
 
+{ TWhisperBenchmarkWorker }
+
+constructor TWhisperBenchmarkWorker.Create(AOwner: TCustomWhisper; AParams: TWhisperParams;
+  const AContextParams: TWhisperContextParams; AModelFiles: TStrings;
+  const ASamples: TWhisperSamples; const AFileName: string; AMaxSeconds: Double;
+  const ADevices: TWhisperDeviceArray);
+begin
+  inherited Create(True);
+  FreeOnTerminate := False;
+  FOwner := AOwner;
+  FParams := AParams;
+  FContextParams := AContextParams;
+  FModelFiles := TStringList.Create;
+  FModelFiles.Assign(AModelFiles);
+  FSamples := ASamples;
+  FFileName := AFileName;
+  FMaxSeconds := AMaxSeconds;
+  FDevices := ADevices;
+  FLock := TCriticalSection.Create;
+end;
+
+destructor TWhisperBenchmarkWorker.Destroy;
+begin
+  FreeAndNil(FBench);
+  FreeAndNil(FParams);
+  FreeAndNil(FModelFiles);
+  FreeAndNil(FLock);
+  inherited;
+end;
+
+procedure TWhisperBenchmarkWorker.Cancel;
+begin
+  FLock.Acquire;
+  try
+    FCancel := True;
+    if FBench <> nil then
+      FBench.Cancel;
+  finally
+    FLock.Release;
+  end;
+end;
+
+procedure TWhisperBenchmarkWorker.BenchDevice(Sender: TObject; const AModelFile: string;
+  const ADevice: TWhisperDevice);
+var
+  M: TWhisperQueuedMessage;
+begin
+  M := TWhisperQueuedMessage.Create;
+  M.FKind := wmkBenchDevice;
+  M.FModelFile := AModelFile;
+  M.FDevice := ADevice;
+  FOwner.Post(M);
+end;
+
+procedure TWhisperBenchmarkWorker.BenchResult(Sender: TObject; const AResult: TWhisperBenchmarkResult);
+var
+  M: TWhisperQueuedMessage;
+begin
+  M := TWhisperQueuedMessage.Create;
+  M.FKind := wmkBenchResult;
+  M.FBench := AResult;
+  FOwner.Post(M);
+end;
+
+procedure TWhisperBenchmarkWorker.Execute;
+var
+  Results: TWhisperBenchmarkArray;
+  M: TWhisperQueuedMessage;
+  Bench: TWhisperBenchmark;
+  I: Integer;
+begin
+  Results := nil;
+  try
+    if FFileName <> '' then
+      FSamples := WhisperLoadWav(FFileName);
+    Bench := TWhisperBenchmark.Create(FModelFiles[0], FSamples);
+    for I := 1 to FModelFiles.Count - 1 do
+      Bench.ModelFiles.Add(FModelFiles[I]);
+    FLock.Acquire;
+    try
+      FBench := Bench;
+      if FCancel then
+        Bench.Cancel;
+    finally
+      FLock.Release;
+    end;
+    Bench.Params := FParams;
+    Bench.ContextParams := FContextParams;
+    Bench.MaxSeconds := FMaxSeconds;
+    Bench.OnStart := BenchDevice;
+    Bench.OnResult := BenchResult;
+    Results := Bench.Run(FDevices);
+  except
+    on E: Exception do
+    begin
+      M := TWhisperQueuedMessage.Create;
+      M.FKind := wmkLog;
+      M.FLevel := wllError;
+      M.FText := 'Benchmark failed: ' + E.Message;
+      FOwner.Post(M);
+    end;
+  end;
+  M := TWhisperQueuedMessage.Create;
+  M.FKind := wmkBenchComplete;
+  M.FBenchResults := Results;
+  M.FBest := TWhisperBenchmark.Best(Results);
+  FOwner.Post(M);
+end;
+
 { TCustomWhisper }
 
 constructor TCustomWhisper.Create(AOwner: TComponent);
@@ -462,6 +702,12 @@ destructor TCustomWhisper.Destroy;
 var
   I: Integer;
 begin
+  if FBenchWorker <> nil then
+  begin
+    FBenchWorker.Cancel;
+    FBenchWorker.WaitFor;   // only queued calls: no deadlock
+    FreeAndNil(FBenchWorker);
+  end;
   if not (csDesigning in ComponentState) then
     DoDeactivate;
   // Messages still in the main thread's queue: orphan them (they free
@@ -526,6 +772,7 @@ var
   I: Integer;
   Msg: string;
   E: EWhisperError;
+  DeviceUsed: string;
 begin
   Msg := '';
   try
@@ -553,14 +800,10 @@ begin
     end;
     if FModelFile = '' then
       raise EWhisperError.Create('No ModelFile set');
-    P := Lib.DefaultContextParams;
-    P.use_gpu := FUseGPU;
-    P.flash_attn := FFlashAttention;
-    P.gpu_device := FGPUDevice;
-    P.dtw_token_timestamps := FDtwPreset <> wahNone;
-    P.dtw_aheads_preset := FDtwPreset;
+    P := BuildContextParams(Lib, DeviceUsed);
     FModel := TWhisperModel.Create(FModelFile, P);
-    Log(wllInfo, Format('Model %s loaded: %s', [FModelFile, FModel.Description]));
+    FActiveDevice := DeviceUsed;
+    Log(wllInfo, Format('Model %s loaded on %s: %s', [FModelFile, DeviceUsed, FModel.Description]));
     FActive := True;
   except
     on Ex: Exception do
@@ -614,6 +857,7 @@ begin
   if FSyncRun <> nil then
     FSyncRun.Cancel;
   FreeAndNil(FModel);
+  FActiveDevice := '';
   if FLogHooked and TWhisperLib.IsLoaded then
     TWhisperLib.Instance.RemoveLogListener(LibLog);
   FLogHooked := False;
@@ -629,7 +873,7 @@ end;
 
 function TCustomWhisper.GetBusy: Boolean;
 begin
-  Result := (FWorker <> nil) or (FSyncRun <> nil);
+  Result := (FWorker <> nil) or (FSyncRun <> nil) or (FBenchWorker <> nil);
 end;
 
 function TCustomWhisper.GetParams: TWhisperParams;
@@ -677,7 +921,7 @@ begin
   if not FActive then
     raise EWhisperError.Create('TWhisper is not active: set ModelFile and Active first');
   if Busy then
-    raise EWhisperError.Create('A transcription is already running');
+    raise EWhisperError.Create('A transcription or benchmark is already running');
   P := BuildRunParams;
   try
     FWorker := TWhisperWorker.Create(Self, P, ASamples, AFileName);
@@ -711,7 +955,7 @@ begin
   if not FActive then
     raise EWhisperError.Create('TWhisper is not active: set ModelFile and Active first');
   if Busy then
-    raise EWhisperError.Create('A transcription is already running');
+    raise EWhisperError.Create('A transcription or benchmark is already running');
   P := BuildRunParams;
   try
     FSyncRun := TWhisperRun.Create(FModel, P);
@@ -741,6 +985,126 @@ begin
     FWorker.Cancel;
   if FSyncRun <> nil then
     FSyncRun.Cancel;
+  if FBenchWorker <> nil then
+    FBenchWorker.Cancel;
+end;
+
+function TCustomWhisper.BuildContextParams(ALib: TWhisperLib; out ADeviceUsed: string): TWhisperContextParams;
+var
+  Devs: TWhisperDeviceArray;
+  Names: string;
+  I: Integer;
+begin
+  Result := ALib.DefaultContextParams;
+  Result.use_gpu := FUseGPU;
+  Result.flash_attn := FFlashAttention;
+  Result.gpu_device := FGPUDevice;
+  Result.dtw_token_timestamps := FDtwPreset <> wahNone;
+  Result.dtw_aheads_preset := FDtwPreset;
+  if (FDevice <> '') and not ALib.ContextParamsFor(FDevice, Result) then
+  begin
+    Devs := ALib.SelectableDevices;
+    Names := '';
+    for I := 0 to High(Devs) do
+      Names := Names + IfThen(Names = '', '', ', ') + Devs[I].Name;
+    Log(wllWarn, Format('Device %s is not available (available: %s) - using the default', [FDevice, Names]));
+  end;
+  // the device these params select, as whisper_backend_init_gpu picks it
+  ADeviceUsed := WHISPER_DEVICE_CPU;
+  if Result.use_gpu then
+  begin
+    Devs := ALib.Devices;
+    for I := 0 to High(Devs) do
+      if Devs[I].GpuIndex = Result.gpu_device then
+        ADeviceUsed := Devs[I].Name;
+  end;
+end;
+
+function TCustomWhisper.Devices: TWhisperDeviceArray;
+begin
+  Result := nil;
+  try
+    Result := TWhisperLib.Load(FLibraryPath).Devices;
+  except
+    on E: EWhisperError do
+      Log(wllWarn, 'Device list unavailable: ' + E.Message);
+  end;
+end;
+
+function TCustomWhisper.SelectableDevices: TWhisperDeviceArray;
+begin
+  Result := nil;
+  try
+    Result := TWhisperLib.Load(FLibraryPath).SelectableDevices;
+  except
+    on E: EWhisperError do
+      Log(wllWarn, 'Device list unavailable: ' + E.Message);
+  end;
+end;
+
+procedure TCustomWhisper.StartBenchmark(const ASamples: TWhisperSamples; const AFileName: string;
+  AMaxSeconds: Double; const ADevices: TWhisperDeviceArray; AModelFiles: TStrings);
+var
+  Models: TStringList;
+begin
+  if Busy then
+    raise EWhisperError.Create('A transcription or benchmark is already running');
+  Models := TStringList.Create;
+  try
+    if (AModelFiles <> nil) and (AModelFiles.Count > 0) then
+      Models.Assign(AModelFiles)
+    else if FModelFile <> '' then
+      Models.Add(FModelFile)
+    else
+      raise EWhisperError.Create('No model to benchmark: set ModelFile or pass model files');
+    StartBenchmarkWorker(ASamples, AFileName, AMaxSeconds, ADevices, Models);
+  finally
+    Models.Free;
+  end;
+end;
+
+procedure TCustomWhisper.StartBenchmarkWorker(const ASamples: TWhisperSamples; const AFileName: string;
+  AMaxSeconds: Double; const ADevices: TWhisperDeviceArray; AModels: TStringList);
+var
+  Lib: TWhisperLib;
+  P: TWhisperParams;
+  CP: TWhisperContextParams;
+  Ignored: string;
+begin
+  Lib := TWhisperLib.Load(FLibraryPath);
+  if not FLogHooked then
+  begin
+    Lib.AddLogListener(LibLog);
+    FLogHooked := True;
+  end;
+  CP := BuildContextParams(Lib, Ignored);
+  P := BuildRunParams;
+  try
+    FBenchWorker := TWhisperBenchmarkWorker.Create(Self, P, CP, AModels, ASamples, AFileName,
+      AMaxSeconds, ADevices);
+  except
+    P.Free;
+    raise;
+  end;
+  Log(wllInfo, Format('Benchmark started: %d model(s), %.0f s of audio per model and device',
+    [AModels.Count, AMaxSeconds]));
+  FBenchWorker.Start;
+end;
+
+procedure TCustomWhisper.BenchmarkAsync(const ASamples: TWhisperSamples; AMaxSeconds: Double;
+  const ADevices: TWhisperDeviceArray; AModelFiles: TStrings);
+begin
+  if Length(ASamples) = 0 then
+    raise EWhisperError.Create('A benchmark needs audio');
+  StartBenchmark(ASamples, '', AMaxSeconds, ADevices, AModelFiles);
+end;
+
+procedure TCustomWhisper.BenchmarkFileAsync(const AFileName: string; AMaxSeconds: Double;
+  const ADevices: TWhisperDeviceArray; AModelFiles: TStrings);
+begin
+  if AFileName = '' then
+    raise EWhisperError.Create('No audio file given');
+  StartBenchmark(nil, AFileName, AMaxSeconds, ADevices, AModelFiles);
 end;
 
 procedure TCustomWhisper.SyncSegment(Sender: TObject; const ASegment: TWhisperSegment);
@@ -820,6 +1184,7 @@ end;
 procedure TCustomWhisper.DeliverMessage(AMessage: TWhisperQueuedMessage);
 var
   W: TWhisperWorker;
+  BW: TWhisperBenchmarkWorker;
 begin
   FPendingLock.Acquire;
   try
@@ -856,6 +1221,44 @@ begin
                AMessage.FResult.AudioSeconds, AMessage.FResult.ElapsedMs]));
           if Assigned(FOnComplete) then
             FOnComplete(Self, AMessage.FResult);
+        end;
+      wmkBenchDevice:
+        begin
+          Log(wllInfo, Format('Benchmark: timing %s on %s', [ExtractFileName(AMessage.FModelFile),
+            WhisperDeviceText(AMessage.FDevice)]));
+          if Assigned(FOnBenchmarkStart) then
+            FOnBenchmarkStart(Self, AMessage.FModelFile, AMessage.FDevice);
+        end;
+      wmkBenchResult:
+        begin
+          if AMessage.FBench.Ok then
+            Log(wllInfo, Format('Benchmark: %s on %s: load %d ms, warm-up %d ms, %.1f s of audio in %d ms = %.2fx real time',
+              [ExtractFileName(AMessage.FBench.ModelFile), AMessage.FBench.Device.Name, AMessage.FBench.LoadMs, AMessage.FBench.WarmupMs,
+               AMessage.FBench.AudioSeconds, AMessage.FBench.RunMs, AMessage.FBench.Speed]))
+          else
+            Log(wllWarn, Format('Benchmark: %s on %s failed: %s', [ExtractFileName(AMessage.FBench.ModelFile),
+              AMessage.FBench.Device.Name, AMessage.FBench.ErrorMessage]));
+          if Assigned(FOnBenchmarkResult) then
+            FOnBenchmarkResult(Self, AMessage.FBench);
+        end;
+      wmkBenchComplete:
+        begin
+          BW := FBenchWorker;
+          FBenchWorker := nil;
+          if BW <> nil then
+          begin
+            BW.WaitFor;
+            BW.Free;
+          end;
+          if AMessage.FBest >= 0 then
+            Log(wllInfo, Format('Benchmark finished: fastest is %s on %s (%.2fx real time)',
+              [ExtractFileName(AMessage.FBenchResults[AMessage.FBest].ModelFile),
+               AMessage.FBenchResults[AMessage.FBest].Device.Name, AMessage.FBenchResults[AMessage.FBest].Speed]))
+          else
+            Log(wllWarn, Format('Benchmark finished: no device succeeded (%d timed)',
+              [Length(AMessage.FBenchResults)]));
+          if Assigned(FOnBenchmarkComplete) then
+            FOnBenchmarkComplete(Self, AMessage.FBenchResults, AMessage.FBest);
         end;
     end;
   except

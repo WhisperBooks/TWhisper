@@ -57,6 +57,8 @@ type
     property FlashAttention;
     { GPU device index. }
     property GPUDevice;
+    { Compute device by name ('CPU', 'CUDA0', 'Vulkan1', ...; '' = default). }
+    property Device;
     { DTW token time stamps preset (wahNone = off). }
     property DtwPreset;
     { Check the record layout against whisper.h on activation. }
@@ -107,6 +109,12 @@ type
     property OnComplete;
     { Log lines (main thread). }
     property OnLog;
+    { A benchmark starts a model / device pair (main thread). }
+    property OnBenchmarkStart;
+    { A benchmark timed a device (main thread). }
+    property OnBenchmarkResult;
+    { A benchmark finished, with the fastest device (main thread). }
+    property OnBenchmarkComplete;
   end;
 
 implementation

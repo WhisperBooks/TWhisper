@@ -3,8 +3,11 @@
   TWhisperRun directly).
 
   Usage:
-    WhisperConsole <model.bin> <audio.wav> [language] [--translate] [--cpu] [--tokens]
-    WhisperConsole --check            (library + layout check only)
+    WhisperConsole <model.bin> <audio.wav> [language] [--translate] [--device NAME] [--tokens]
+    WhisperConsole --check            (library + layout check, device list)
+    WhisperConsole --bench <model.bin> <audio.wav> [language] [--seconds N] [--also <model2.bin>]...
+                                      (time every model on every device, report the fastest)
+  --device takes a name from the device list ('CPU', 'CUDA0', 'Vulkan0', ...).
 
   It logs every step with its values: library file and version, system info,
   the layout check, the model, the audio as read, each segment as it
@@ -17,6 +20,7 @@ program WhisperConsole;
 uses
   SysUtils,
   Classes,
+  StrUtils,
   Whisper.Types in '..\..\lib\Whisper.Types.pas',
   Whisper.DynLib in '..\..\lib\Whisper.DynLib.pas',
   Whisper.API in '..\..\lib\Whisper.API.pas',
@@ -33,6 +37,10 @@ type
     procedure Progress(Sender: TObject; AProgress: Integer);
     { Prints warnings and errors of the library. }
     procedure Log(Sender: TObject; ALevel: TWhisperLogLevel; const AText: string);
+    { Prints the model and device a benchmark is about to time. }
+    procedure BenchDevice(Sender: TObject; const AModelFile: string; const ADevice: TWhisperDevice);
+    { Prints one benchmark result. }
+    procedure BenchResult(Sender: TObject; const AResult: TWhisperBenchmarkResult);
   end;
 
 const
@@ -64,6 +72,23 @@ begin
     WriteLn(ErrOutput, 'whisper: ' + AText);
 end;
 
+procedure TConsoleHandler.BenchDevice(Sender: TObject; const AModelFile: string;
+  const ADevice: TWhisperDevice);
+begin
+  WriteLn('Timing ', ExtractFileName(AModelFile), ' on ', WhisperDeviceText(ADevice), ' ...');
+end;
+
+procedure TConsoleHandler.BenchResult(Sender: TObject; const AResult: TWhisperBenchmarkResult);
+begin
+  if AResult.Ok then
+    WriteLn(Format('  %s on %s: %.2fx real time (load %d ms, warm-up %d ms, %.1f s of audio in %d ms)',
+      [ExtractFileName(AResult.ModelFile), AResult.Device.Name, AResult.Speed, AResult.LoadMs, AResult.WarmupMs, AResult.AudioSeconds,
+       AResult.RunMs]), sLineBreak, '    "', Copy(AResult.Text, 1, 100), '"')
+  else
+    WriteLn(Format('  %s on %s FAILED: %s', [ExtractFileName(AResult.ModelFile), AResult.Device.Name,
+      AResult.ErrorMessage]));
+end;
+
 var
   Handler: TConsoleHandler;
   Lib: TWhisperLib;
@@ -75,30 +100,57 @@ var
   Info: TWhisperWavInfo;
   Samples: TWhisperSamples;
   R: TWhisperTranscription;
-  ModelFile, AudioFile, Lang, Arg: string;
-  CheckOnly, Translate, UseGPU, Tokens, LayoutOk: Boolean;
+  ModelFile, AudioFile, Lang, Arg, DeviceName: string;
+  CheckOnly, Translate, Tokens, LayoutOk, Bench: Boolean;
+  BenchSeconds: Double;
+  Devs: TWhisperDeviceArray;
+  Benchmark: TWhisperBenchmark;
+  BenchResults: TWhisperBenchmarkArray;
+  Best: Integer;
+  ExtraModels: TStringList;
   I: Integer;
 begin
   ExitCode := 1;
+  ExtraModels := nil;
   Handler := TConsoleHandler.Create;
   try
     try
       CheckOnly := False;
       Translate := False;
-      UseGPU := True;
       Tokens := False;
+      Bench := False;
+      BenchSeconds := WHISPER_CHUNK_SIZE;
+      DeviceName := '';
+      ExtraModels := TStringList.Create;
       ModelFile := '';
       AudioFile := '';
       Lang := WHISPER_LANGUAGE_AUTO;
-      for I := 1 to ParamCount do
+      I := 1;
+      while I <= ParamCount do
       begin
         Arg := ParamStr(I);
+        Inc(I);
         if Arg = '--check' then
           CheckOnly := True
         else if Arg = '--translate' then
           Translate := True
-        else if Arg = '--cpu' then
-          UseGPU := False
+        else if Arg = '--bench' then
+          Bench := True
+        else if (Arg = '--device') and (I <= ParamCount) then
+        begin
+          DeviceName := ParamStr(I);
+          Inc(I);
+        end
+        else if (Arg = '--also') and (I <= ParamCount) then
+        begin
+          ExtraModels.Add(ParamStr(I));
+          Inc(I);
+        end
+        else if (Arg = '--seconds') and (I <= ParamCount) then
+        begin
+          BenchSeconds := StrToFloat(ParamStr(I));
+          Inc(I);
+        end
         else if Arg = '--tokens' then
           Tokens := True
         else if ModelFile = '' then
@@ -110,8 +162,9 @@ begin
       end;
       if not CheckOnly and ((ModelFile = '') or (AudioFile = '')) then
       begin
-        WriteLn('Usage: WhisperConsole <model.bin> <audio.wav> [language] [--translate] [--cpu] [--tokens]');
+        WriteLn('Usage: WhisperConsole <model.bin> <audio.wav> [language] [--translate] [--device NAME] [--tokens]');
         WriteLn('       WhisperConsole --check');
+        WriteLn('       WhisperConsole --bench <model.bin> <audio.wav> [language] [--seconds N]');
         Exit;
       end;
 
@@ -130,8 +183,46 @@ begin
       finally
         Report.Free;
       end;
+      Devs := Lib.SelectableDevices;
+      WriteLn(Format('Selectable devices: %d', [Length(Devs)]));
+      for I := 0 to High(Devs) do
+        WriteLn(Format('  %s  (whisper gpu_device %d)', [WhisperDeviceText(Devs[I]), Devs[I].GpuIndex]));
       if not LayoutOk then
         Exit;
+      if Bench then
+      begin
+        Lib.AddLogListener(Handler.Log);
+        Samples := WhisperLoadWav(AudioFile, Info);
+        Benchmark := TWhisperBenchmark.Create(ModelFile, Samples);
+        Params := TWhisperParams.Create;
+        try
+          Params.Language := Lang;
+          Benchmark.Params := Params;
+          Benchmark.ModelFiles.AddStrings(ExtraModels);
+          Benchmark.MaxSeconds := BenchSeconds;
+          Benchmark.OnStart := Handler.BenchDevice;
+          Benchmark.OnResult := Handler.BenchResult;
+          BenchResults := Benchmark.Run(nil);
+          Best := TWhisperBenchmark.Best(BenchResults);
+          for I := 0 to Benchmark.ModelFiles.Count - 1 do
+            if TWhisperBenchmark.Best(BenchResults, Benchmark.ModelFiles[I]) >= 0 then
+              WriteLn(Format('Fastest for %s: %s', [ExtractFileName(Benchmark.ModelFiles[I]),
+                BenchResults[TWhisperBenchmark.Best(BenchResults, Benchmark.ModelFiles[I])].Device.Name]));
+          if Best >= 0 then
+          begin
+            WriteLn(Format('Fastest overall: %s on %s (%.2fx real time) - use --device %s',
+              [ExtractFileName(BenchResults[Best].ModelFile), BenchResults[Best].Device.Name,
+               BenchResults[Best].Speed, BenchResults[Best].Device.Name]));
+            ExitCode := 0;
+          end
+          else
+            WriteLn('No device succeeded');
+        finally
+          Params.Free;
+          Benchmark.Free;
+        end;
+        Exit;
+      end;
       if CheckOnly then
       begin
         ExitCode := 0;
@@ -140,10 +231,15 @@ begin
       Lib.AddLogListener(Handler.Log);
 
       CP := Lib.DefaultContextParams;
-      CP.use_gpu := UseGPU;
+      if not Lib.ContextParamsFor(DeviceName, CP) then
+      begin
+        WriteLn(ErrOutput, 'Unknown device ', DeviceName, ' (see the device list above)');
+        Exit;
+      end;
       Model := TWhisperModel.Create(ModelFile, CP);
       try
-        WriteLn(Format('Model %s: %s', [ModelFile, Model.Description]));
+        WriteLn(Format('Model %s on %s: %s', [ModelFile, IfThen(DeviceName = '', 'the default device',
+          DeviceName), Model.Description]));
         Samples := WhisperLoadWav(AudioFile, Info);
         WriteLn(Format('Audio %s: %d channel(s), %d Hz, %d bits, %d frames -> %d samples (%.2f s)',
           [AudioFile, Info.Channels, Info.SampleRate, Info.BitsPerSample, Info.Frames,
@@ -180,6 +276,7 @@ begin
         WriteLn(ErrOutput, E.ClassName, ': ', E.Message);
     end;
   finally
+    ExtraModels.Free;
     if TWhisperLib.IsLoaded then
       TWhisperLib.Instance.RemoveLogListener(Handler.Log);
     Handler.Free;

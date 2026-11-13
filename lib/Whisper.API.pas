@@ -18,6 +18,18 @@
   to a library, and Windows looks next to the executable, not next to a
   whisper.dll loaded from another folder).
 
+  @bold(Backends.) whisper.cpp does not load ggml's backends itself. After
+  loading the libraries, @link(TWhisperLib.Load) calls
+  ggml_backend_load_all_from_path on the library folder: with a
+  GGML_BACKEND_DL build that loads every backend DLL found there (the best
+  CPU variant, CUDA, Vulkan, HIP, ...), skipping any whose runtime is
+  missing; with a build that links its backends in, it finds nothing extra
+  and changes nothing. On Windows the library folder is put on the DLL
+  search path while that runs, so a backend's own runtime DLLs
+  (cudart64_*.dll, hipblas.dll, ...) are found next to it.
+  @link(TWhisperLib.Devices) lists the result; a device is chosen per model
+  with @link(TWhisperLib.ContextParamsFor).
+
   @bold(C structs passed or returned by value.) whisper_full and
   whisper_init_from_file_with_params take a struct by value;
   whisper_full_get_token_data returns one. Their ABI differs per platform
@@ -52,7 +64,7 @@ unit Whisper.API;
 interface
 
 uses
-  SysUtils, Classes, SyncObjs,
+  SysUtils, Classes, SyncObjs, StrUtils,
   Whisper.Types, Whisper.DynLib;
 
 type
@@ -320,6 +332,41 @@ type
   { Pointer to @link(TWhisperFlat). }
   PWhisperFlat = ^TWhisperFlat;
 
+  { The ggml backend / device exports the binding uses, named as in
+    ggml-backend.h. They live in ggml (registry, loading) and ggml-base
+    (device properties); each is bound from whichever library has it. All
+    optional: @nil when not found. }
+  TWhisperGgmlFlat = record
+    { Loads every known backend found in dir_path (best variant each). }
+    ggml_backend_load_all_from_path: procedure(dir_path: PAnsiChar); cdecl;
+    { Loads one backend library and registers it. }
+    ggml_backend_load: function(path: PAnsiChar): PGgmlBackendReg; cdecl;
+    { Number of registered backends. }
+    ggml_backend_reg_count: function: NativeUInt; cdecl;
+    { A registered backend. }
+    ggml_backend_reg_get: function(index: NativeUInt): PGgmlBackendReg; cdecl;
+    { Name of a backend ('CPU', 'CUDA', 'Vulkan', ...). }
+    ggml_backend_reg_name: function(reg: PGgmlBackendReg): PAnsiChar; cdecl;
+    { Number of devices of all registered backends. }
+    ggml_backend_dev_count: function: NativeUInt; cdecl;
+    { A device, in registry order. }
+    ggml_backend_dev_get: function(index: NativeUInt): PGgmlBackendDev; cdecl;
+    { Device by name ('CUDA0'). }
+    ggml_backend_dev_by_name: function(name: PAnsiChar): PGgmlBackendDev; cdecl;
+    { Name of a device ('CUDA0'). }
+    ggml_backend_dev_name: function(device: PGgmlBackendDev): PAnsiChar; cdecl;
+    { Description of a device (e.g. the GPU model). }
+    ggml_backend_dev_description: function(device: PGgmlBackendDev): PAnsiChar; cdecl;
+    { Free and total memory of a device, bytes. }
+    ggml_backend_dev_memory: procedure(device: PGgmlBackendDev; free, total: PNativeUInt); cdecl;
+    { Type of a device. }
+    ggml_backend_dev_type: function(device: PGgmlBackendDev): TWhisperDeviceType; cdecl;
+    { Backend of a device. }
+    ggml_backend_dev_backend_reg: function(device: PGgmlBackendDev): PGgmlBackendReg; cdecl;
+  end;
+  { Pointer to @link(TWhisperGgmlFlat). }
+  PWhisperGgmlFlat = ^TWhisperGgmlFlat;
+
   { A log line of whisper.cpp / ggml, delivered on the thread that wrote it.
     AText has no trailing line break. }
   TWhisperLogEvent = procedure(Sender: TObject; ALevel: TWhisperLogLevel;
@@ -351,10 +398,34 @@ type
     FModelCount: Integer;
     { Messages about the loading (dependencies, missing exports). }
     FLoadLog: TStringList;
+    { The ggml library (registry), for the device exports; @nil if absent. }
+    FGgmlLib: TWhisperDynLib;
+    { The ggml-base library (device properties); @nil if absent. }
+    FGgmlBaseLib: TWhisperDynLib;
+    { The ggml device exports. }
+    FGgmlFlat: TWhisperGgmlFlat;
+    { ggml device exports none of the libraries has. }
+    FGgmlMissing: TStringList;
+    { Backing field of @link(LibraryFolder). }
+    FLibraryFolder: string;
+    { Backing field of @link(BackendsLoaded). }
+    FBackendsLoaded: Boolean;
     { Creates the object; Load does the work. }
     constructor CreateLib;
-    { Loads the ggml libraries found in AFolder, in dependency order. }
+    { Loads the ggml libraries found in AFolder, in dependency order:
+      ggml-base, then ggml; when ggml does not load (a build that links its
+      backends in, whose backend libraries the OS does not find), the
+      backend libraries present first, then ggml again. }
     procedure LoadDependencies(const AFolder: string);
+    { Loads one library of AFolder by stem (first file name that exists).
+      @returns(@true when it was loaded.) }
+    function LoadDependency(const AFolder, AStem: string): Boolean;
+    { Opens ggml and ggml-base (already in the process) and binds the
+      device exports. }
+    procedure BindGgml;
+    { Calls ggml_backend_load_all_from_path(AFolder) once (AFolder = '': the
+      executable's folder and the current directory). }
+    procedure LoadBackends(const AFolder: string);
     { Binds every export. }
     procedure BindAll;
     { Hooks or unhooks whisper_log_set depending on the listeners. }
@@ -369,6 +440,13 @@ type
     function GetFileName: string;
     { Getter of @link(MissingSymbols). }
     function GetMissingSymbols: TStrings;
+    { Getter of @link(GgmlFlat). }
+    function GetGgmlFlat: PWhisperGgmlFlat;
+    { Raises when ggml lists no device: whisper.cpp would then throw a C++
+      exception out of the model loader and end the process. }
+    procedure CheckDevices;
+    { Reads one device from the registry. }
+    function ReadDevice(AIndex: Integer; ADev: PGgmlBackendDev; var AGpuCount: Integer): TWhisperDevice;
   public
     { Use @link(Load). }
     constructor Create;
@@ -437,6 +515,25 @@ type
     function GetTokenData(ACtx: PWhisperContext; AState: PWhisperState;
       ISegment, IToken: Integer): TWhisperTokenData;
 
+    { Every device of the loaded backends, in registry order (memory as of
+      now). Empty when the library has no device exports (very old builds). }
+    function Devices: TWhisperDeviceArray;
+    { Finds a device by name ('CPU', 'CUDA0', 'Vulkan1', ...; not case
+      sensitive).
+      @returns(@true when found.) }
+    function FindDevice(const AName: string; out ADevice: TWhisperDevice): Boolean;
+    { Sets use_gpu / gpu_device of AParams so whisper.cpp uses the named
+      device: WHISPER_DEVICE_CPU = CPU only; a GPU / IGPU name = that device;
+      '' = leave AParams as it is (whisper.cpp's choice: the first GPU when
+      use_gpu).
+      @returns(@false when the name is not a usable device - AParams is
+        then unchanged.) }
+    function ContextParamsFor(const ADevice: string; var AParams: TWhisperContextParams): Boolean;
+    { Devices whisper.cpp can be told to use, for a choice or a benchmark:
+      the CPU device first, then every GPU and IGPU (ACCEL devices are always
+      used anyway, META ones never). }
+    function SelectableDevices: TWhisperDeviceArray;
+
     { Adds a log listener; the first one routes whisper.cpp's log here
       (otherwise it goes to stderr). Listeners run on the thread that logs. }
     procedure AddLogListener(const AListener: TWhisperLogEvent);
@@ -454,13 +551,31 @@ type
     property FileName: string read GetFileName;
     { Optional exports the library does not have. }
     property MissingSymbols: TStrings read GetMissingSymbols;
+    { The ggml device exports (each may be @nil). }
+    property GgmlFlat: PWhisperGgmlFlat read GetGgmlFlat;
+    { ggml device exports none of the libraries has. }
+    property GgmlMissingSymbols: TStringList read FGgmlMissing;
+    { Folder the whisper library was loaded from ('' when found through the
+      OS search path); backends are loaded from here. }
+    property LibraryFolder: string read FLibraryFolder;
+    { @true once ggml_backend_load_all_from_path has run. }
+    property BackendsLoaded: Boolean read FBackendsLoaded;
     { What happened while loading: libraries loaded, dependencies skipped. }
     property LoadLog: TStringList read FLoadLog;
   end;
 
+{ One line describing a device, e.g. 'CUDA0 - NVIDIA GeForce RTX 4070
+  (GPU, CUDA, 11.2 of 12.0 GB free)'. }
+function WhisperDeviceText(const ADevice: TWhisperDevice): string;
+
 implementation
 
 const
+  { Names of the device types, for WhisperDeviceText. }
+  DEVICE_TYPE_NAMES: array[TWhisperDeviceType] of string = ('CPU', 'GPU', 'integrated GPU',
+    'accelerator', 'meta');
+  { Bytes per gigabyte, for WhisperDeviceText. }
+  BYTES_PER_GB = 1024.0 * 1024.0 * 1024.0;
   { Structs compared by CheckLayout (rows of WHISPER_C_LAYOUT). }
   WHISPER_LAYOUT_STRUCTS = 7;
   {$I Whisper.Layout.inc}
@@ -517,6 +632,7 @@ begin
   FDeps := TList.Create;
   FLogLock := TCriticalSection.Create;
   FLoadLog := TStringList.Create;
+  FGgmlMissing := TStringList.Create;
 end;
 
 destructor TWhisperLib.Destroy;
@@ -526,12 +642,16 @@ begin
   if (FLib <> nil) and Assigned(FFlat.whisper_log_set) then
     FFlat.whisper_log_set(nil, nil);
   FillChar(FFlat, SizeOf(FFlat), 0);   // no export may be called after this
+  FillChar(FGgmlFlat, SizeOf(FGgmlFlat), 0);
   FreeAndNil(FLib);
+  FreeAndNil(FGgmlLib);
+  FreeAndNil(FGgmlBaseLib);
   if FDeps <> nil then
     for I := FDeps.Count - 1 downto 0 do
       TWhisperDynLib(FDeps[I]).Free;
   FreeAndNil(FDeps);
   FreeAndNil(FLoadLog);
+  FreeAndNil(FGgmlMissing);
   FreeAndNil(FLogLock);
   inherited;
 end;
@@ -541,38 +661,320 @@ begin
   Result := PlatformFileNames('whisper', '1');
 end;
 
-procedure TWhisperLib.LoadDependencies(const AFolder: string);
+function TWhisperLib.LoadDependency(const AFolder, AStem: string): Boolean;
 var
-  I, J: Integer;
   Names: TStringList;
   Path: string;
+  J: Integer;
   Dep: TWhisperDynLib;
 begin
-  for I := Low(GGML_DEPENDENCIES) to High(GGML_DEPENDENCIES) do
+  Result := False;
+  Names := PlatformFileNames(AStem, '0');
+  try
+    for J := 0 to Names.Count - 1 do
+    begin
+      Path := IncludeTrailingPathDelimiter(AFolder) + Names[J];
+      if not FileExists(Path) then
+        Continue;
+      try
+        Dep := TWhisperDynLib.Load(Path, True);
+        FDeps.Add(Dep);
+        FLoadLog.Add('Loaded dependency ' + Path);
+        Result := True;
+      except
+        on E: EWhisperDynLibError do
+          // A backend whose own runtime is missing (e.g. CUDA) is skipped;
+          // whisper may still load with the others.
+          FLoadLog.Add('Skipped dependency ' + Path + ': ' + E.Message);
+      end;
+      Exit;
+    end;
+  finally
+    Names.Free;
+  end;
+end;
+
+procedure TWhisperLib.LoadDependencies(const AFolder: string);
+var
+  I: Integer;
+begin
+  // ggml-base, then ggml: all a GGML_BACKEND_DL build links against (its
+  // backends are loaded later by ggml itself, see LoadBackends).
+  LoadDependency(AFolder, GGML_DEPENDENCIES[Low(GGML_DEPENDENCIES)]);
+  if LoadDependency(AFolder, GGML_DEPENDENCIES[High(GGML_DEPENDENCIES)]) then
+    Exit;
+  // ggml did not load (or is absent): a build that links its backends into
+  // ggml, whose backend libraries the OS does not look for in AFolder. Load
+  // the ones present, then ggml again.
+  for I := Low(GGML_DEPENDENCIES) + 1 to High(GGML_DEPENDENCIES) - 1 do
+    LoadDependency(AFolder, GGML_DEPENDENCIES[I]);
+  LoadDependency(AFolder, GGML_DEPENDENCIES[High(GGML_DEPENDENCIES)]);
+end;
+
+procedure TWhisperLib.BindGgml;
+
+  { Opens a ggml library: from the whisper library's folder when known,
+    else by name (it is in the process already as a dependency). }
+  function OpenLib(const AStem: string): TWhisperDynLib;
+  var
+    Names: TStringList;
+    J: Integer;
   begin
-    Names := PlatformFileNames(GGML_DEPENDENCIES[I], '0');
+    Result := nil;
+    Names := PlatformFileNames(AStem, '0');
     try
       for J := 0 to Names.Count - 1 do
       begin
-        Path := IncludeTrailingPathDelimiter(AFolder) + Names[J];
-        if not FileExists(Path) then
-          Continue;
-        try
-          Dep := TWhisperDynLib.Load(Path, True);
-          FDeps.Add(Dep);
-          FLoadLog.Add('Loaded dependency ' + Path);
-        except
-          on E: EWhisperDynLibError do
-            // A backend whose own runtime is missing (e.g. CUDA) is skipped;
-            // whisper may still load with the others.
-            FLoadLog.Add('Skipped dependency ' + Path + ': ' + E.Message);
-        end;
-        Break;
+        if FLibraryFolder <> '' then
+        begin
+          if FileExists(IncludeTrailingPathDelimiter(FLibraryFolder) + Names[J]) then
+            Result := TWhisperDynLib.Load(IncludeTrailingPathDelimiter(FLibraryFolder) + Names[J], False);
+        end
+        else
+          Result := TWhisperDynLib.Load(Names[J], False);
+        if Result <> nil then
+          Exit;
       end;
     finally
       Names.Free;
     end;
   end;
+
+  { Binds AName from whichever library has it. }
+  procedure G(var AProc; const AName: string);
+  begin
+    Pointer(AProc) := nil;
+    if (FGgmlLib <> nil) and FGgmlLib.HasSymbol(AName) then
+      FGgmlLib.Bind(AProc, AName, False)
+    else if (FGgmlBaseLib <> nil) and FGgmlBaseLib.HasSymbol(AName) then
+      FGgmlBaseLib.Bind(AProc, AName, False)
+    else if FLib.HasSymbol(AName) then        // ggml linked into whisper
+      FLib.Bind(AProc, AName, False)
+    else
+      FGgmlMissing.Add(AName);
+  end;
+
+begin
+  FGgmlLib := OpenLib(GGML_DEPENDENCIES[High(GGML_DEPENDENCIES)]);
+  FGgmlBaseLib := OpenLib(GGML_DEPENDENCIES[Low(GGML_DEPENDENCIES)]);
+  G(FGgmlFlat.ggml_backend_load_all_from_path, 'ggml_backend_load_all_from_path');
+  G(FGgmlFlat.ggml_backend_load, 'ggml_backend_load');
+  G(FGgmlFlat.ggml_backend_reg_count, 'ggml_backend_reg_count');
+  G(FGgmlFlat.ggml_backend_reg_get, 'ggml_backend_reg_get');
+  G(FGgmlFlat.ggml_backend_reg_name, 'ggml_backend_reg_name');
+  G(FGgmlFlat.ggml_backend_dev_count, 'ggml_backend_dev_count');
+  G(FGgmlFlat.ggml_backend_dev_get, 'ggml_backend_dev_get');
+  G(FGgmlFlat.ggml_backend_dev_by_name, 'ggml_backend_dev_by_name');
+  G(FGgmlFlat.ggml_backend_dev_name, 'ggml_backend_dev_name');
+  G(FGgmlFlat.ggml_backend_dev_description, 'ggml_backend_dev_description');
+  G(FGgmlFlat.ggml_backend_dev_memory, 'ggml_backend_dev_memory');
+  G(FGgmlFlat.ggml_backend_dev_type, 'ggml_backend_dev_type');
+  G(FGgmlFlat.ggml_backend_dev_backend_reg, 'ggml_backend_dev_backend_reg');
+  if FGgmlMissing.Count > 0 then
+    FLoadLog.Add(Format('%d ggml device export(s) missing: %s - device selection limited',
+      [FGgmlMissing.Count, FGgmlMissing.CommaText]));
+end;
+
+procedure TWhisperLib.LoadBackends(const AFolder: string);
+type
+  TSetDllDirectoryW = function(lpPathName: PWideChar): LongBool; stdcall;
+var
+  M: TWhisperFPUMask;
+  U: UTF8String;
+  {$ifdef MSWINDOWS}
+  Kernel: TWhisperDynLib;
+  SetDllDirectoryW: TSetDllDirectoryW;
+  W: UnicodeString;
+  {$endif}
+begin
+  if FBackendsLoaded or not Assigned(FGgmlFlat.ggml_backend_load_all_from_path) then
+    Exit;
+  {$ifdef MSWINDOWS}
+  // ggml loads each backend with LoadLibraryW(full path): its own runtime
+  // DLLs (cudart64_*.dll, hipblas.dll, ...) are looked for on the normal
+  // search path, which does not include the backend's folder. Add it while
+  // the backends load.
+  SetDllDirectoryW := nil;
+  Kernel := nil;
+  if AFolder <> '' then
+  begin
+    Kernel := TWhisperDynLib.Load('kernel32.dll', False);
+    if Kernel <> nil then
+      Kernel.Bind(SetDllDirectoryW, 'SetDllDirectoryW', False);
+  end;
+  {$endif}
+  M := WhisperMaskFPU;
+  try
+    {$ifdef MSWINDOWS}
+    if Assigned(SetDllDirectoryW) then
+    begin
+      W := UnicodeString(ExcludeTrailingPathDelimiter(AFolder));
+      SetDllDirectoryW(PWideChar(W));
+    end;
+    try
+    {$endif}
+      if AFolder <> '' then
+      begin
+        U := UTF8String(ExcludeTrailingPathDelimiter(AFolder));
+        FGgmlFlat.ggml_backend_load_all_from_path(PAnsiChar(U));
+        FLoadLog.Add('Loaded backends from ' + AFolder);
+      end
+      else
+      begin
+        FGgmlFlat.ggml_backend_load_all_from_path(nil);
+        FLoadLog.Add('Loaded backends from the executable folder and the current directory');
+      end;
+    {$ifdef MSWINDOWS}
+    finally
+      if Assigned(SetDllDirectoryW) then
+        SetDllDirectoryW(nil);   // back to the default search path
+    end;
+    {$endif}
+  finally
+    WhisperRestoreFPU(M);
+    {$ifdef MSWINDOWS}
+    Kernel.Free;
+    {$endif}
+  end;
+  FBackendsLoaded := True;
+end;
+
+function TWhisperLib.ReadDevice(AIndex: Integer; ADev: PGgmlBackendDev;
+  var AGpuCount: Integer): TWhisperDevice;
+var
+  F, T: NativeUInt;
+  Reg: PGgmlBackendReg;
+begin
+  Result.Index := AIndex;
+  Result.Name := WhisperStr(FGgmlFlat.ggml_backend_dev_name(ADev));
+  if Assigned(FGgmlFlat.ggml_backend_dev_description) then
+    Result.Description := WhisperStr(FGgmlFlat.ggml_backend_dev_description(ADev))
+  else
+    Result.Description := '';
+  Result.Backend := '';
+  if Assigned(FGgmlFlat.ggml_backend_dev_backend_reg) and Assigned(FGgmlFlat.ggml_backend_reg_name) then
+  begin
+    Reg := FGgmlFlat.ggml_backend_dev_backend_reg(ADev);
+    if Reg <> nil then
+      Result.Backend := WhisperStr(FGgmlFlat.ggml_backend_reg_name(Reg));
+  end;
+  if Assigned(FGgmlFlat.ggml_backend_dev_type) then
+    Result.DeviceType := FGgmlFlat.ggml_backend_dev_type(ADev)
+  else
+    Result.DeviceType := wdtGPU;
+  F := 0;
+  T := 0;
+  if Assigned(FGgmlFlat.ggml_backend_dev_memory) then
+    FGgmlFlat.ggml_backend_dev_memory(ADev, @F, @T);
+  Result.MemoryFree := F;
+  Result.MemoryTotal := T;
+  // whisper_backend_init_gpu counts GPU and IGPU devices in registry order
+  if Result.DeviceType in [wdtGPU, wdtIGPU] then
+  begin
+    Result.GpuIndex := AGpuCount;
+    Inc(AGpuCount);
+  end
+  else
+    Result.GpuIndex := -1;
+end;
+
+function TWhisperLib.Devices: TWhisperDeviceArray;
+var
+  I, N, GpuCount: Integer;
+  Dev: PGgmlBackendDev;
+begin
+  Result := nil;
+  if not Assigned(FGgmlFlat.ggml_backend_dev_count) or not Assigned(FGgmlFlat.ggml_backend_dev_get) or
+    not Assigned(FGgmlFlat.ggml_backend_dev_name) then
+    Exit;
+  N := Integer(FGgmlFlat.ggml_backend_dev_count());
+  SetLength(Result, N);
+  GpuCount := 0;
+  for I := 0 to N - 1 do
+  begin
+    Dev := FGgmlFlat.ggml_backend_dev_get(NativeUInt(I));
+    Result[I] := ReadDevice(I, Dev, GpuCount);
+  end;
+end;
+
+function TWhisperLib.FindDevice(const AName: string; out ADevice: TWhisperDevice): Boolean;
+var
+  All: TWhisperDeviceArray;
+  I: Integer;
+begin
+  All := Devices;
+  for I := 0 to High(All) do
+    if SameText(All[I].Name, AName) then
+    begin
+      ADevice := All[I];
+      Exit(True);
+    end;
+  Result := False;
+end;
+
+function TWhisperLib.ContextParamsFor(const ADevice: string; var AParams: TWhisperContextParams): Boolean;
+var
+  D: TWhisperDevice;
+begin
+  if ADevice = '' then
+    Exit(True);
+  if SameText(ADevice, WHISPER_DEVICE_CPU) then
+  begin
+    AParams.use_gpu := False;
+    Exit(True);
+  end;
+  Result := FindDevice(ADevice, D) and (D.GpuIndex >= 0);
+  if Result then
+  begin
+    AParams.use_gpu := True;
+    AParams.gpu_device := D.GpuIndex;
+  end
+  else if FindDevice(ADevice, D) and (D.DeviceType = wdtCPU) then
+  begin
+    AParams.use_gpu := False;   // a CPU device under another name
+    Result := True;
+  end;
+end;
+
+function TWhisperLib.SelectableDevices: TWhisperDeviceArray;
+var
+  All: TWhisperDeviceArray;
+  I, N: Integer;
+begin
+  All := Devices;
+  Result := nil;
+  SetLength(Result, Length(All));
+  N := 0;
+  // the CPU first: the reference every GPU is compared with
+  for I := 0 to High(All) do
+    if All[I].DeviceType = wdtCPU then
+    begin
+      Result[N] := All[I];
+      Inc(N);
+      Break;
+    end;
+  // then GPU / IGPU devices in registry order (= whisper's gpu_device order)
+  for I := 0 to High(All) do
+    if All[I].DeviceType in [wdtGPU, wdtIGPU] then
+    begin
+      Result[N] := All[I];
+      Inc(N);
+    end;
+  SetLength(Result, N);
+end;
+
+function WhisperDeviceText(const ADevice: TWhisperDevice): string;
+begin
+  Result := ADevice.Name;
+  if (ADevice.Description <> '') and not SameText(ADevice.Description, ADevice.Name) then
+    Result := Result + ' - ' + ADevice.Description;
+  Result := Result + ' (' + DEVICE_TYPE_NAMES[ADevice.DeviceType];
+  if (ADevice.Backend <> '') and not SameText(ADevice.Backend, ADevice.Name) then
+    Result := Result + ', ' + ADevice.Backend;
+  if ADevice.MemoryTotal > 0 then
+    Result := Result + Format(', %.1f of %.1f GB free', [ADevice.MemoryFree / BYTES_PER_GB,
+      ADevice.MemoryTotal / BYTES_PER_GB]);
+  Result := Result + ')';
 end;
 
 class function TWhisperLib.Load(const ALibraryPath: string): TWhisperLib;
@@ -581,6 +983,7 @@ var
   Names, Candidates: TStringList;
   ExeDir, Folder, Path, Tried: string;
   I, J: Integer;
+  Devs: TWhisperDeviceArray;
 begin
   if GWhisperLib <> nil then
     Exit(GWhisperLib);
@@ -634,6 +1037,7 @@ begin
         try
           Lib.FLib := TWhisperDynLib.Load(Path, True);
           Lib.FLoadLog.Add('Loaded ' + Path);
+          Lib.FLibraryFolder := ExtractFilePath(Path);
           Break;
         except
           on E: EWhisperDynLibError do
@@ -648,6 +1052,14 @@ begin
       raise EWhisperError.Create('Cannot load the whisper.cpp library. Tried:' + Tried);
     Lib.BindAll;
     Lib.FVersion := WhisperStr(Lib.FFlat.whisper_version());
+    Lib.BindGgml;
+    Lib.LoadBackends(Lib.FLibraryFolder);
+    Devs := Lib.Devices;
+    if Length(Devs) = 0 then
+      Lib.FLoadLog.Add('No compute device listed (no ggml device exports, or no backend loaded)')
+    else
+      for I := 0 to High(Devs) do
+        Lib.FLoadLog.Add('Device ' + WhisperDeviceText(Devs[I]));
   except
     Lib.Free;
     raise;
@@ -800,6 +1212,11 @@ begin
   Result := @FFlat;
 end;
 
+function TWhisperLib.GetGgmlFlat: PWhisperGgmlFlat;
+begin
+  Result := @FGgmlFlat;
+end;
+
 function TWhisperLib.GetFileName: string;
 begin
   if FLib = nil then
@@ -878,6 +1295,14 @@ begin
   FFlat.whisper_free_params(P);
 end;
 
+procedure TWhisperLib.CheckDevices;
+begin
+  if Assigned(FGgmlFlat.ggml_backend_dev_count) and (FGgmlFlat.ggml_backend_dev_count() = 0) then
+    raise EWhisperError.CreateFmt('No ggml compute backend is loaded, so no model can be loaded. A ' +
+      'GGML_BACKEND_DL build needs its backend libraries (at least one ggml-cpu-*) in %s',
+      [IfThen(LibraryFolder = '', 'the executable folder', LibraryFolder)]);
+end;
+
 function TWhisperLib.InitFromFile(const AFileName: string;
   const AParams: TWhisperContextParams): PWhisperContext;
 var
@@ -885,6 +1310,7 @@ var
   P: TWhisperContextParams;
   M: TWhisperFPUMask;
 begin
+  CheckDevices;
   U := UTF8String(AFileName);   // whisper.cpp converts UTF-8 to wide on Windows
   P := AParams;
   M := WhisperMaskFPU;
@@ -907,6 +1333,7 @@ var
 begin
   if not Assigned(FFlat.whisper_init_from_buffer_with_params) then
     raise EWhisperError.Create('The library has no whisper_init_from_buffer_with_params');
+  CheckDevices;
   P := AParams;
   M := WhisperMaskFPU;
   try

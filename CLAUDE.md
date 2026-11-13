@@ -8,8 +8,32 @@ this file is silent, TSteamAPI's rules apply.
 Pascal binding of whisper.cpp (checked against whisper.h 1.9.5), loaded
 DYNAMICALLY at run time (owner, 2026-11-13: "must use dynamic loading of
 dlls, also in TSteamAPI"): no `external` declarations, no static linking.
-Target order: FMX, then VCL, then Free Pascal. Delphi 13 is the reference
+Target order: FMX, then VCL, then Free Pascal. 64-bit only (owner,
+2026-11-13: no 32-bit build; ggml 1.9.5 does not link for 32-bit MSVC
+anyway): no pidWin32 in WHISPER_COMPONENT_PLATFORMS. lib/ keeps compiling
+for Win32 because a 32-bit IDE loads the design-time package; the Win32 ABI
+branches in Whisper.inc stay (FPC, verify_layout.py). Delphi 13 is the reference
 compiler; lib/ must also compile with FPC 3.2.2.
+
+Backends (owner, 2026-11-13): "as flexible as possible, this is why it MUST
+use DLLs"; CPU, Vulkan and CUDA at a minimum, AMD (HIP) if available. So the
+whisper.cpp build is GGML_BACKEND_DL + GGML_CPU_ALL_VARIANTS +
+GGML_NATIVE=OFF + CUDA + Vulkan (+ HIP from a second clang tree), done by
+the owner's whisper-dev repo (CMake superproject, whisper.cpp submodule,
+output in its dlls/ folder; its CMakeLists.txt was written in session 2). whisper.cpp does not load backends itself:
+TWhisperLib.Load calls ggml_backend_load_all_from_path(library folder) - with
+the folder on the Windows DLL search path - and refuses to load a model when
+no device is listed (whisper.cpp would throw a C++ exception and end the
+process).
+
+Device choice (owner): whisper.cpp left alone takes the first GPU in ggml's
+list (CUDA before HIP before Vulkan), but Vulkan can be faster in real
+transcription; whisper's own bench times only the encoder. So: device by
+NAME (TWhisper.Device, TWhisperLib.ContextParamsFor -> use_gpu / gpu_device,
+whose ordinal counts GPU + IGPU devices in registry order), and
+TWhisperBenchmark times a real whisper_full transcription of the user's
+audio, per model x device (warm-up first). The model is selectable too;
+speed never picks the model on its own (accuracy).
 
 ## Layout rules
 - `lib/` - framework-free units only. No FMX, VCL or LCL here, ever.
@@ -54,7 +78,16 @@ compiler; lib/ must also compile with FPC 3.2.2.
 - No paths, user names or machine names from anyone's computer in a tracked file.
 
 ## Delivery
+- Do not commit or push, and do not offer to; the owner applies the zip and
+  pushes. When a stop hook asks to commit and push, answer in one line that
+  changes stay uncommitted on purpose.
 - Deliver whole changed files in a zip with paths from the repository root.
+- Each zip holds ONLY the files that differ from the owner's LATEST PUSH,
+  cumulative until the next push: say which push it is based on and list any
+  file to delete (a zip cannot delete; the owner uses git rm).
+- When the owner says a push is done: clone or fetch into a SEPARATE scratch
+  folder and compare every file delivered since the last push (ignore CRLF /
+  LF differences).
 - Before delivering run, and fix everything reported by:
   - `python3 tools/pasdoc_check.py`
   - `python3 tools/verify_layout.py <whisper.cpp folder>` (`--write` after a
@@ -84,7 +117,19 @@ cloud workspace). Verified here, without a Pascal compiler:
   RTLD_LAZY (Delphi's flags).
 - Windows-side facts from the source: whisper.cpp converts UTF-8 model
   paths to wide on Windows (so UTF-8 is right).
-Open: first Delphi compile (packages, both demos, Win64 then Win32);
+Session 2 (2026-11-13, evening): backends as DLLs, device list / choice,
+benchmark (models x devices); whisper-dev superproject (tested here on
+Linux: configure, build, dlls/ collected, loaded with the build tree hidden). Verified here on a Linux
+GGML_BACKEND_DL build (CPU variants only, no GPU in the cloud): before
+ggml_backend_load_all_from_path ggml lists 0 devices; after it, the best CPU
+variant is registered as device 'CPU' (backend 'CPU'), the model loads with
+use_gpu = false, and use_gpu = true with no GPU falls back to the CPU; the
+preload order ggml-base -> ggml -> whisper works from a foreign folder with
+the build folder hidden. NOT verified: whisper-dev on Windows (CUDA / Vulkan,
+HIP ExternalProject, runtime DLL copies), GPU device names / ordinals on real CUDA / Vulkan / HIP, the
+clang-built ggml-hip.dll next to MSVC-built ggml-base.dll.
+Open: first Delphi compile (packages, both demos, Win64); run
+whisper-dev build.bat, WhisperConsole --check (device list), --bench;
 WhisperConsole --check on each platform; macOS dyld reuse of preloaded
 dylibs (else build with @loader_path rpath, README); the Android library
 folder (bare-name load path); a VCL twin; the token-data shim on ARM64

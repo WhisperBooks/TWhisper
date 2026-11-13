@@ -47,6 +47,10 @@ const
   WHISPER_LANGUAGE_AUTO = 'auto';
   { Time stamps of whisper.cpp count in units of 10 ms: this many per second. }
   WHISPER_TICKS_PER_SECOND = 100;
+  { Device name that selects the CPU (no GPU) in @code(TCustomWhisper.Device)
+    and @code(TWhisperLib.ContextParamsFor); the same name ggml gives its
+    CPU device. }
+  WHISPER_DEVICE_CPU = 'CPU';
 
 type
   { Raised for every failure of the binding. }
@@ -472,6 +476,88 @@ type
     { Error message when the run failed (ResultCode <> 0 or an exception). }
     ErrorMessage: string;
   end;
+
+  { Opaque C struct behind @link(PGgmlBackendDev). }
+  TGgmlBackendDevOpaque = record
+  end;
+  { ggml_backend_dev_t - a compute device (CPU, a GPU through CUDA, Vulkan,
+    HIP, ...). Owned by ggml; valid while the library is loaded. }
+  PGgmlBackendDev = ^TGgmlBackendDevOpaque;
+
+  { Opaque C struct behind @link(PGgmlBackendReg). }
+  TGgmlBackendRegOpaque = record
+  end;
+  { ggml_backend_reg_t - a backend (CPU, CUDA, Vulkan, HIP, ...). }
+  PGgmlBackendReg = ^TGgmlBackendRegOpaque;
+
+  { enum ggml_backend_dev_type. }
+  TWhisperDeviceType = (
+    { GGML_BACKEND_DEVICE_TYPE_CPU: CPU, system memory. }
+    wdtCPU,
+    { GGML_BACKEND_DEVICE_TYPE_GPU: GPU with dedicated memory. }
+    wdtGPU,
+    { GGML_BACKEND_DEVICE_TYPE_IGPU: integrated GPU using host memory. }
+    wdtIGPU,
+    { GGML_BACKEND_DEVICE_TYPE_ACCEL: accelerator used together with the CPU
+      (BLAS, AMX); whisper.cpp always adds these itself. }
+    wdtAccel,
+    { GGML_BACKEND_DEVICE_TYPE_META: wrapper of several devices (tensor
+      parallelism); not used by whisper.cpp. }
+    wdtMeta
+  );
+
+  { One compute device of the loaded backends (Pascal side). }
+  TWhisperDevice = record
+    { Index in ggml's device registry (ggml_backend_dev_get). }
+    Index: Integer;
+    { Device name, unique per process: 'CPU', 'CUDA0', 'Vulkan1', 'ROCm0',
+      ... (the name the backend gives it). Use it for
+      @code(TCustomWhisper.Device). }
+    Name: string;
+    { Human-readable description, e.g. the GPU model. }
+    Description: string;
+    { Backend that provides the device: 'CPU', 'CUDA', 'Vulkan', 'ROCm' /
+      'HIP', ... }
+    Backend: string;
+    { Kind of device. }
+    DeviceType: TWhisperDeviceType;
+    { Free memory in bytes when listed (0 if the backend does not say). }
+    MemoryFree: UInt64;
+    { Total memory in bytes (0 if the backend does not say). }
+    MemoryTotal: UInt64;
+    { Value of whisper_context_params.gpu_device that selects this device
+      (its position among GPU and IGPU devices); -1 for every other type. }
+    GpuIndex: Integer;
+  end;
+  { Devices of the loaded backends. }
+  TWhisperDeviceArray = array of TWhisperDevice;
+
+  { Result of timing one model on one device (@code(TWhisperBenchmark)). }
+  TWhisperBenchmarkResult = record
+    { The model file. }
+    ModelFile: string;
+    { The device. }
+    Device: TWhisperDevice;
+    { @true when the model loaded and both runs succeeded on it. }
+    Ok: Boolean;
+    { Why it failed (Ok = @false). }
+    ErrorMessage: string;
+    { Time to load the model onto the device, ms. }
+    LoadMs: Int64;
+    { First (warm-up) run, ms: includes one-time costs such as shader /
+      kernel compilation. }
+    WarmupMs: Int64;
+    { Timed run, ms: the figure the choice is based on. }
+    RunMs: Int64;
+    { Audio of the timed run, seconds. }
+    AudioSeconds: Double;
+    { Audio seconds per wall-clock second of the timed run (higher is faster). }
+    Speed: Double;
+    { Text of the timed run (to see that the device computes correctly). }
+    Text: string;
+  end;
+  { Results of a benchmark, one per device. }
+  TWhisperBenchmarkArray = array of TWhisperBenchmarkResult;
 
   { FPU exception mask type of the compiler's Math unit. }
   TWhisperFPUMask = {$ifdef FPC}TFPUExceptionMask{$else}TArithmeticExceptionMask{$endif};
