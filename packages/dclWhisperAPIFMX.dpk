@@ -1,0 +1,20 @@
+package dclWhisperAPIFMX;
+
+{ whisper.cpp binding for FireMonkey - design time: puts TWhisperAPI on the
+  "WhisperAPI" palette page. }
+
+{$DESCRIPTION 'whisper.cpp binding for FireMonkey - design time'}
+{$DESIGNONLY}
+{$IMPLICITBUILD ON}
+
+requires
+  rtl,
+  fmx,
+  designide,
+  WhisperAPI,
+  WhisperAPIFMX;
+
+contains
+  Whisper.FMX.Reg in '..\fmx\Whisper.FMX.Reg.pas';
+
+end.

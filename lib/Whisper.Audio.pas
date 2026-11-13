@@ -89,6 +89,8 @@ const
   WAVE_FORMAT_EXTENSIBLE = $FFFE;
   { Zero crossings of the sinc on each side of the resampling filter. }
   SINC_ZERO_CROSSINGS = 16;
+  { Fractional positions the resampling filter is tabulated for. }
+  RESAMPLE_PHASES = 1024;
 
 function ReadTag(AStream: TStream): AnsiString;
 begin
@@ -303,8 +305,10 @@ end;
 function WhisperResample(const ASamples: TWhisperSamples; ASourceRate: Integer;
   ATargetRate: Integer): TWhisperSamples;
 var
-  Ratio, Cutoff, Pos, X, W, H, Sum, WSum: Double;
-  HalfWidth, N, I, K, Center, Last: Integer;
+  Ratio, Cutoff, Pos, D, X, H, Sum, WSum: Double;
+  HalfWidth, Taps, N, I, J, K, K0, Center, Last, Q: Integer;
+  Table: array of Double;   // (RESAMPLE_PHASES + 1) rows of Taps coefficients
+  Row: Integer;
 begin
   Result := nil;
   if Length(ASamples) = 0 then
@@ -319,6 +323,23 @@ begin
   Ratio := ATargetRate / ASourceRate;
   Cutoff := Min(1.0, Ratio);                         // low-pass at the lower Nyquist
   HalfWidth := Ceil(SINC_ZERO_CROSSINGS / Cutoff);   // filter half-width in source samples
+  Taps := 2 * HalfWidth;
+  // The Hann-windowed sinc for every fractional position, quantised to
+  // RESAMPLE_PHASES steps: computing Sin / Cos per tap and output sample
+  // took ~50 s for a 35-minute book; the table makes it a multiply-add.
+  // (Exact for ratios whose positions fall on the steps, e.g. 8 -> 16 kHz.)
+  SetLength(Table, (RESAMPLE_PHASES + 1) * Taps);
+  for Q := 0 to RESAMPLE_PHASES do
+    for J := 0 to Taps - 1 do
+    begin
+      D := Q / RESAMPLE_PHASES - (J - HalfWidth + 1);   // = Pos - K
+      X := D * Cutoff;
+      if Abs(X) < 1e-9 then
+        H := 1
+      else
+        H := Sin(Pi * X) / (Pi * X);
+      Table[Q * Taps + J] := H * (0.5 + 0.5 * Cos(Pi * D / HalfWidth));
+    end;
   N := Trunc(Length(ASamples) * Ratio);
   Last := High(ASamples);
   SetLength(Result, N);
@@ -326,23 +347,27 @@ begin
   begin
     Pos := I / Ratio;
     Center := Floor(Pos);
+    Row := Round((Pos - Center) * RESAMPLE_PHASES) * Taps;
+    K0 := Center - HalfWidth + 1;
     Sum := 0;
     WSum := 0;
-    for K := Center - HalfWidth + 1 to Center + HalfWidth do
-    begin
-      if (K < 0) or (K > Last) then
-        Continue;
-      X := (Pos - K) * Cutoff;
-      // sinc, Hann-windowed over the half-width
-      if Abs(X) < 1e-9 then
-        H := 1
-      else
-        H := Sin(Pi * X) / (Pi * X);
-      W := 0.5 + 0.5 * Cos(Pi * (Pos - K) / HalfWidth);
-      H := H * W;
-      Sum := Sum + ASamples[K] * H;
-      WSum := WSum + H;
-    end;
+    if (K0 >= 0) and (K0 + Taps - 1 <= Last) then
+      for J := 0 to Taps - 1 do
+      begin
+        H := Table[Row + J];
+        Sum := Sum + ASamples[K0 + J] * H;
+        WSum := WSum + H;
+      end
+    else
+      for J := 0 to Taps - 1 do
+      begin
+        K := K0 + J;
+        if (K < 0) or (K > Last) then
+          Continue;
+        H := Table[Row + J];
+        Sum := Sum + ASamples[K] * H;
+        WSum := WSum + H;
+      end;
     if Abs(WSum) > 1e-9 then
       Result[I] := Sum / WSum     // unity gain, also at the edges
     else

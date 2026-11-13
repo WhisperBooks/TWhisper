@@ -1,4 +1,4 @@
-# TWhisper - whisper.cpp for Delphi (FMX)
+# TWhisperAPI - whisper.cpp for Delphi (FMX)
 
 A Pascal binding of [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
 (local speech-to-text with OpenAI's Whisper models) for Delphi FireMonkey.
@@ -6,7 +6,7 @@ It follows the structure and source rules of
 [TSteamAPI](https://github.com/G3DGames/TSteamAPI):
 
 - a framework-free core in `lib/` that also compiles with FPC 3.2.2
-- one non-visual component, `TWhisper`, for FMX in `fmx/`
+- one non-visual component, `TWhisperAPI`, for FMX in `fmx/`
 - runtime and design-time packages
 - a GUI demo and a console demo
 
@@ -115,14 +115,14 @@ loads backends in a fixed order (CUDA, HIP, Vulkan), so on an NVIDIA machine
 takes CUDA. On some systems Vulkan is faster for real transcription, and only
 timing real transcription tells. The binding therefore:
 
-- lists the devices: `TWhisperLib.Devices` / `TWhisper.Devices` give name
+- lists the devices: `TWhisperLib.Devices` / `TWhisperAPI.Devices` give name
   (`CPU`, `CUDA0`, `Vulkan0`, `ROCm0`, ...), description, backend, type and
   memory;
-- selects one by name: `TWhisper.Device := 'Vulkan0'`, or
+- selects one by name: `TWhisperAPI.Device := 'Vulkan0'`, or
   `TWhisperLib.ContextParamsFor` for the classes. `'CPU'` means no GPU. An
   unknown name falls back to the default with a warning, so a program keeps
   working when a GPU disappears;
-- times them: `TWhisperBenchmark` / `TWhisper.BenchmarkFileAsync`.
+- times them: `TWhisperBenchmark` / `TWhisperAPI.BenchmarkFileAsync`.
 
 **What the benchmark measures.** It doesn't use whisper.cpp's own bench,
 which times only the encoder. For each model and device it:
@@ -142,8 +142,8 @@ fastest device, and shows the fastest pair overall.
 
 ## Using the component
 
-1. Build and install the packages (see below), drop a `TWhisper`
-   (palette page "Whisper") on a form and set `ModelFile`.
+1. Build and install the packages (see below), drop a `TWhisperAPI`
+   (palette page "WhisperAPI") on a form and set `ModelFile`.
 2. Set `Active := True` (in code, or in the form file). This loads the
    library, checks the record layout and loads the model. A failure fires
    `OnLoadFailed`, or is shown if that event is not assigned. It never
@@ -153,7 +153,7 @@ fastest device, and shows the fastest pair overall.
    main thread. `Cancel` stops a run and keeps the segments so far.
 
 ```pascal
-procedure TfrmMain.Whisper1Segment(Sender: TObject; const ASegment: TWhisperSegment);
+procedure TfrmMain.WhisperAPI1Segment(Sender: TObject; const ASegment: TWhisperSegment);
 begin
   memText.Lines.Add(Format('[%s --> %s] %s', [WhisperTimeToStr(ASegment.T0),
     WhisperTimeToStr(ASegment.T1), ASegment.Text]));
@@ -184,28 +184,51 @@ lib/       framework-free units (Delphi + FPC 3.2.2)
   Whisper.Audio         WAV reader, 16-bit PCM conversion, windowed-sinc resampler
   Whisper.Core          TWhisperModel, TWhisperParams, TWhisperRun, TWhisperBenchmark, text export
   Whisper.Components    TCustomWhisper (lifecycle, worker thread, main-thread events)
-fmx/       Whisper.FMX (TWhisper), Whisper.FMX.Reg (design time)
-packages/  Whisper (runtime, rtl), WhisperFMX (runtime), dclWhisperFMX (design)
-demos/     WhisperDemo (FMX), WhisperConsole (console, smoke test)
-tools/     verify_layout.py, pasdoc_check.py
+fmx/       Whisper.FMX (TWhisperAPI), Whisper.FMX.Reg (design time)
+packages/  WhisperAPI (runtime, rtl), WhisperAPIFMX (runtime), dclWhisperAPIFMX (design): .dpk + .dproj
+WhisperAPI.groupproj   every project (apps, runtime packages, design package)
+demos/     WhisperDemo (FMX), WhisperConsole (console, smoke test): .dpr + .dproj + README.md
+tools/     verify_layout.py, pasdoc_check.py, gen_projects.py, project_check.py
 ```
 
 ## Packages and demos
 
-Only the `.dpk` / `.dpr` sources are included. Delphi creates the matching
-`.dproj` (and the `.res`) when you open them.
+Open **`WhisperAPI.groupproj`** at the repository root. The layout follows
+TSteamAPI: the Projects window lists the applications first, then the runtime
+packages, then the design package. Build All builds the runtime packages
+first, then the design package, then the demos.
 
-1. Open and build `packages/Whisper.dpk`, then `WhisperFMX.dpk`, for every
-   64-bit target platform you use.
-2. Install `dclWhisperFMX.dpk` for the IDE you run. With the 32-bit IDE that
-   means compiling `Whisper` and `WhisperFMX` for Win32 too: the IDE loads
-   them, but never loads whisper.dll, so no 32-bit DLL is needed. With the
-   64-bit IDE (Delphi 12.2+) build all three for Win64 and Win32 drops out.
-3. The demos name the library units with paths (`in '..\..\lib\...'`), so
-   they compile without any search-path setup. Opening the demo's form in
-   the designer needs `dclWhisperFMX` installed.
-4. Copy the whisper.cpp libraries next to the built executable (for example
-   `demos/WhisperDemo/Win64/Debug`), or set `LibraryPath`.
+| Project | Kind | Platforms |
+|---|---|---|
+| `demos/WhisperDemo` | FMX application | Win64, macOS, Linux64 |
+| `demos/WhisperConsole` | console | Win64, macOS, Linux64 |
+| `packages/WhisperAPI` | runtime, rtl only: `lib/` | + Win32 (for the 32-bit IDE), Android64 |
+| `packages/WhisperAPIFMX` | runtime: `Whisper.FMX` | + Win32 (for the 32-bit IDE), Android64 |
+| `packages/dclWhisperAPIFMX` | design: registers `TWhisperAPI` | Win32 / Win64 (the IDE's) |
+
+1. **Runtime packages:** build `WhisperAPI` and `WhisperAPIFMX` for every platform
+   you target. Their DCUs go to `$(BDSCOMMONDIR)\Dcp\$(Platform)`, next to
+   their `.dcp`, which is on the IDE's default Library path. Projects using
+   the library therefore need no search paths. Debug and Release share that
+   folder (the last build wins).
+2. **Design package:** install `dclWhisperAPIFMX` for the IDE you run.
+   - With the 32-bit IDE that means building the runtime packages for Win32
+     too. The IDE loads them, but never loads whisper.dll, so no 32-bit DLL
+     is needed.
+   - With the 64-bit IDE (Delphi 12.2+), build them for Win64 only.
+3. **Demos:** they use the library like any user project. They list only
+   their own sources and link the packages' DCUs, so build the packages
+   first; a library change needs a package rebuild before a demo sees it.
+   Each demo's `README.md`, shown by the IDE as the project page, says what
+   goes next to the executable.
+4. **Libraries:** copy whisper-dev's `dlls\` folder next to the built
+   executable (for example `demos\WhisperDemo\Win64\Debug`), put it on
+   PATH, or set `LibraryPath`.
+
+The project files were generated by `tools/gen_projects.py`, as in TSteamAPI.
+Once the IDE has re-saved them, the saved files are authoritative.
+`tools/project_check.py` checks them: BOM, XML, the same units in `.dpr` /
+`.dpk` and `.dproj`, and that every group member exists.
 
 Run **WhisperConsole first** on every new platform:
 
@@ -213,6 +236,7 @@ Run **WhisperConsole first** on every new platform:
 WhisperConsole --check                                       library, layout check, device list
 WhisperConsole --bench ggml-base.en.bin jfk.wav              time every device
 WhisperConsole --bench ggml-base.bin talk.wav en --also ggml-small.bin --seconds 60
+WhisperConsole --bench ggml-large-v3-turbo.bin book.wav --seconds all --devices CUDA0,Vulkan0 --runs 3
 WhisperConsole ggml-base.en.bin jfk.wav --device Vulkan0     transcribe on a chosen device
 WhisperConsole ggml-base.bin speech.wav auto --tokens        detect language, token data
 ```
@@ -228,7 +252,7 @@ WhisperConsole ggml-base.bin speech.wav auto --tokens        detect language, to
   what the Pascal compiler produced, at run time, on the actual platform.
   It also compares the library's default params with whisper.h's documented
   values, which catches a DLL built from a different header.
-  `TWhisper.CheckLayout` (default on) refuses a library that fails.
+  `TWhisperAPI.CheckLayout` (default on) refuses a library that fails.
 - **Structs passed by value.** `whisper_full` and
   `whisper_init_from_file_with_params` take their params struct by value.
   clang shows the lowering:
@@ -273,5 +297,6 @@ WhisperConsole ggml-base.bin speech.wav auto --tokens        detect language, to
 
 ```
 python3 tools/pasdoc_check.py                       PasDoc on everything, ASCII only
+python3 tools/project_check.py                      .dproj / .groupproj / .dpr / .dpk consistency
 python3 tools/verify_layout.py <whisper.cpp> --write  after updating whisper.cpp
 ```

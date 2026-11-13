@@ -3,7 +3,7 @@
   segments, progress and the library log, and export as text / SubRip /
   WebVTT.)
 
-  The TWhisper component (Whisper1) and its events are set up in
+  The TWhisperAPI component (WhisperAPI1) and its events are set up in
   uMain.fmx; only the settings file and the language list are handled in
   FormCreate. Settings (model, audio file, language, options) are kept per
   user in SettingsFolder + WhisperDemo.ini, never next to the executable. }
@@ -23,7 +23,7 @@ type
   { The demo's main form. }
   TfrmMain = class(TForm)
     { The whisper.cpp component. }
-    Whisper1: TWhisper;
+    WhisperAPI1: TWhisperAPI;
     { Top panel with the settings and buttons. }
     layTop: TLayout;
     { Caption of cbModel. }
@@ -93,24 +93,24 @@ type
     { Starts the device benchmark on the WAV file. }
     procedure btnBenchmarkClick(Sender: TObject);
     { A benchmark timed a device. }
-    procedure Whisper1BenchmarkResult(Sender: TObject; const AResult: TWhisperBenchmarkResult);
+    procedure WhisperAPI1BenchmarkResult(Sender: TObject; const AResult: TWhisperBenchmarkResult);
     { The benchmark finished: selects the fastest device. }
-    procedure Whisper1BenchmarkComplete(Sender: TObject; const AResults: TWhisperBenchmarkArray;
+    procedure WhisperAPI1BenchmarkComplete(Sender: TObject; const AResults: TWhisperBenchmarkArray;
       ABest: Integer);
     { The model is loaded. }
-    procedure Whisper1Loaded(Sender: TObject);
+    procedure WhisperAPI1Loaded(Sender: TObject);
     { The library or the model could not be loaded. }
-    procedure Whisper1LoadFailed(Sender: TObject; const AMessage: string);
+    procedure WhisperAPI1LoadFailed(Sender: TObject; const AMessage: string);
     { The model was unloaded. }
-    procedure Whisper1Unloaded(Sender: TObject);
+    procedure WhisperAPI1Unloaded(Sender: TObject);
     { A new segment. }
-    procedure Whisper1Segment(Sender: TObject; const ASegment: TWhisperSegment);
+    procedure WhisperAPI1Segment(Sender: TObject; const ASegment: TWhisperSegment);
     { Progress of the run. }
-    procedure Whisper1Progress(Sender: TObject; AProgress: Integer);
+    procedure WhisperAPI1Progress(Sender: TObject; AProgress: Integer);
     { The run finished. }
-    procedure Whisper1Complete(Sender: TObject; const AResult: TWhisperTranscription);
+    procedure WhisperAPI1Complete(Sender: TObject; const AResult: TWhisperTranscription);
     { A log line. }
-    procedure Whisper1Log(Sender: TObject; ALevel: TWhisperLogLevel; const AText: string);
+    procedure WhisperAPI1Log(Sender: TObject; ALevel: TWhisperLogLevel; const AText: string);
   private
     { Segments of the last run (for Save). }
     FSegments: TWhisperSegmentArray;
@@ -180,7 +180,7 @@ begin
     [WHISPER_BINDING_VERSION]);
   ProgressBar1.Max := PROGRESS_MAX;
   cbLanguage.Items.Add(WHISPER_LANGUAGE_AUTO);
-  Codes := Whisper1.LanguageCodes;   // loads the library; a failure is logged
+  Codes := WhisperAPI1.LanguageCodes;   // loads the library; a failure is logged
   try
     for I := 0 to Codes.Count - 1 do
       cbLanguage.Items.Add(Codes[I]);
@@ -200,7 +200,7 @@ end;
 procedure TfrmMain.FormClose(Sender: TObject; var Action: TCloseAction);
 begin
   SaveSettings;
-  Whisper1.Cancel;
+  WhisperAPI1.Cancel;
   FreeAndNil(FDeviceNames);
 end;
 
@@ -262,7 +262,7 @@ begin
   FDeviceNames.Clear;
   cbDevice.Items.Add(DEFAULT_DEVICE_TEXT);
   FDeviceNames.Add('');
-  Devs := Whisper1.SelectableDevices;
+  Devs := WhisperAPI1.SelectableDevices;
   for I := 0 to High(Devs) do
   begin
     cbDevice.Items.Add(WhisperDeviceText(Devs[I]));
@@ -303,15 +303,15 @@ end;
 
 procedure TfrmMain.UpdateControls;
 begin
-  btnLoad.Text := IfThen(Whisper1.Active, 'Unload model', 'Load model');
-  btnLoad.Enabled := not Whisper1.Busy;
-  cbModel.Enabled := not Whisper1.Active;
-  btnModel.Enabled := not Whisper1.Active;
-  cbDevice.Enabled := not Whisper1.Active;
-  btnBenchmark.Enabled := not Whisper1.Busy;
-  btnTranscribe.Enabled := Whisper1.Active and not Whisper1.Busy;
-  btnCancel.Enabled := Whisper1.Busy;
-  btnSave.Enabled := (Length(FSegments) > 0) and not Whisper1.Busy;
+  btnLoad.Text := IfThen(WhisperAPI1.Active, 'Unload model', 'Load model');
+  btnLoad.Enabled := not WhisperAPI1.Busy;
+  cbModel.Enabled := not WhisperAPI1.Active;
+  btnModel.Enabled := not WhisperAPI1.Active;
+  cbDevice.Enabled := not WhisperAPI1.Active;
+  btnBenchmark.Enabled := not WhisperAPI1.Busy;
+  btnTranscribe.Enabled := WhisperAPI1.Active and not WhisperAPI1.Busy;
+  btnCancel.Enabled := WhisperAPI1.Busy;
+  btnSave.Enabled := (Length(FSegments) > 0) and not WhisperAPI1.Busy;
 end;
 
 function TfrmMain.SettingsFolder: string;
@@ -410,14 +410,14 @@ end;
 
 procedure TfrmMain.btnLoadClick(Sender: TObject);
 begin
-  if Whisper1.Active then
-    Whisper1.Active := False
+  if WhisperAPI1.Active then
+    WhisperAPI1.Active := False
   else
   begin
-    Whisper1.ModelFile := SelectedModel;
-    Whisper1.Device := SelectedDevice;
-    AddLog('Loading ' + Whisper1.ModelFile);
-    Whisper1.Active := True;   // OnLoaded or OnLoadFailed follows
+    WhisperAPI1.ModelFile := SelectedModel;
+    WhisperAPI1.Device := SelectedDevice;
+    AddLog('Loading ' + WhisperAPI1.ModelFile);
+    WhisperAPI1.Active := True;   // OnLoaded or OnLoadFailed follows
   end;
   UpdateControls;
 end;
@@ -428,10 +428,10 @@ begin
   FSegments := nil;
   ProgressBar1.Value := 0;
   if cbLanguage.ItemIndex >= 0 then
-    Whisper1.Language := cbLanguage.Items[cbLanguage.ItemIndex];
-  Whisper1.Translate := chkTranslate.IsChecked;
+    WhisperAPI1.Language := cbLanguage.Items[cbLanguage.ItemIndex];
+  WhisperAPI1.Translate := chkTranslate.IsChecked;
   try
-    Whisper1.TranscribeFileAsync(edAudio.Text);
+    WhisperAPI1.TranscribeFileAsync(edAudio.Text);
     lblStatus.Text := 'Running';
   except
     on E: Exception do
@@ -443,7 +443,7 @@ end;
 procedure TfrmMain.btnCancelClick(Sender: TObject);
 begin
   AddLog('Cancel requested');
-  Whisper1.Cancel;
+  WhisperAPI1.Cancel;
 end;
 
 procedure TfrmMain.btnSaveClick(Sender: TObject);
@@ -471,10 +471,10 @@ var
   Models: TStringList;
   I: Integer;
 begin
-  Whisper1.ModelFile := SelectedModel;
+  WhisperAPI1.ModelFile := SelectedModel;
   if cbLanguage.ItemIndex >= 0 then
-    Whisper1.Language := cbLanguage.Items[cbLanguage.ItemIndex];
-  Whisper1.Translate := chkTranslate.IsChecked;
+    WhisperAPI1.Language := cbLanguage.Items[cbLanguage.ItemIndex];
+  WhisperAPI1.Translate := chkTranslate.IsChecked;
   Models := TStringList.Create;
   try
     if chkAllModels.IsChecked then
@@ -486,7 +486,7 @@ begin
     memText.Lines.Add(Format('Benchmark: %d model(s), first %d s of %s on every device',
       [Models.Count, BENCHMARK_SECONDS, ExtractFileName(edAudio.Text)]));
     try
-      Whisper1.BenchmarkFileAsync(edAudio.Text, BENCHMARK_SECONDS, nil, Models);
+      WhisperAPI1.BenchmarkFileAsync(edAudio.Text, BENCHMARK_SECONDS, nil, Models);
       lblStatus.Text := 'Benchmark';
     except
       on E: Exception do
@@ -498,7 +498,7 @@ begin
   UpdateControls;
 end;
 
-procedure TfrmMain.Whisper1BenchmarkResult(Sender: TObject; const AResult: TWhisperBenchmarkResult);
+procedure TfrmMain.WhisperAPI1BenchmarkResult(Sender: TObject; const AResult: TWhisperBenchmarkResult);
 begin
   if AResult.Ok then
     memText.Lines.Add(Format('%-24s %-10s %6.2fx real time   (load %d ms, warm-up %d ms, run %d ms)  %s',
@@ -509,10 +509,10 @@ begin
       AResult.Device.Name, AResult.ErrorMessage]));
 end;
 
-procedure TfrmMain.Whisper1BenchmarkComplete(Sender: TObject; const AResults: TWhisperBenchmarkArray;
+procedure TfrmMain.WhisperAPI1BenchmarkComplete(Sender: TObject; const AResults: TWhisperBenchmarkArray;
   ABest: Integer);
 begin
-  lblStatus.Text := IfThen(Whisper1.Active, 'Ready', 'No model');
+  lblStatus.Text := IfThen(WhisperAPI1.Active, 'Ready', 'No model');
   if ABest >= 0 then
   begin
     // Speed alone does not pick a model (bigger ones are more accurate): with
@@ -528,34 +528,34 @@ begin
     SelectDevice(AResults[ABest].Device.Name);
     memText.Lines.Add(Format('Selected: %s on %s (%.2fx real time)%s', [ExtractFileName(AResults[ABest].ModelFile),
       AResults[ABest].Device.Name, AResults[ABest].Speed,
-      IfThen(Whisper1.Active, ' - unload and load the model to use it', '')]));
+      IfThen(WhisperAPI1.Active, ' - unload and load the model to use it', '')]));
   end
   else
     memText.Lines.Add('No device succeeded');
   UpdateControls;
 end;
 
-procedure TfrmMain.Whisper1Loaded(Sender: TObject);
+procedure TfrmMain.WhisperAPI1Loaded(Sender: TObject);
 begin
-  AddLog('Model running on ' + Whisper1.ActiveDevice);
+  AddLog('Model running on ' + WhisperAPI1.ActiveDevice);
   lblStatus.Text := 'Ready';
   UpdateControls;
 end;
 
-procedure TfrmMain.Whisper1LoadFailed(Sender: TObject; const AMessage: string);
+procedure TfrmMain.WhisperAPI1LoadFailed(Sender: TObject; const AMessage: string);
 begin
   lblStatus.Text := 'No model';
   UpdateControls;
 end;
 
-procedure TfrmMain.Whisper1Unloaded(Sender: TObject);
+procedure TfrmMain.WhisperAPI1Unloaded(Sender: TObject);
 begin
   AddLog('Model unloaded');
   lblStatus.Text := 'No model';
   UpdateControls;
 end;
 
-procedure TfrmMain.Whisper1Segment(Sender: TObject; const ASegment: TWhisperSegment);
+procedure TfrmMain.WhisperAPI1Segment(Sender: TObject; const ASegment: TWhisperSegment);
 var
   N: Integer;
 begin
@@ -567,13 +567,13 @@ begin
   memText.GoToTextEnd;
 end;
 
-procedure TfrmMain.Whisper1Progress(Sender: TObject; AProgress: Integer);
+procedure TfrmMain.WhisperAPI1Progress(Sender: TObject; AProgress: Integer);
 begin
   ProgressBar1.Value := AProgress;
   lblStatus.Text := Format('%d %%', [AProgress]);
 end;
 
-procedure TfrmMain.Whisper1Complete(Sender: TObject; const AResult: TWhisperTranscription);
+procedure TfrmMain.WhisperAPI1Complete(Sender: TObject; const AResult: TWhisperTranscription);
 begin
   FSegments := AResult.Segments;
   if AResult.ErrorMessage <> '' then
@@ -590,7 +590,7 @@ begin
   UpdateControls;
 end;
 
-procedure TfrmMain.Whisper1Log(Sender: TObject; ALevel: TWhisperLogLevel; const AText: string);
+procedure TfrmMain.WhisperAPI1Log(Sender: TObject; ALevel: TWhisperLogLevel; const AText: string);
 begin
   if LEVEL_NAMES[ALevel] <> '' then
     AddLog(LEVEL_NAMES[ALevel] + ': ' + AText)

@@ -11,4 +11,4 @@ tracked (see .gitignore).
 - macOS: libwhisper*.dylib, libggml*.dylib (build with an @loader_path rpath).
 
 Models (ggml-*.bin) are not kept here either: download them with whisper.cpp's
-models/download-ggml-model.sh (or .cmd) and point TWhisper.ModelFile at them.
+models/download-ggml-model.sh (or .cmd) and point TWhisperAPI.ModelFile at them.

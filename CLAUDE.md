@@ -29,7 +29,7 @@ process).
 Device choice (owner): whisper.cpp left alone takes the first GPU in ggml's
 list (CUDA before HIP before Vulkan), but Vulkan can be faster in real
 transcription; whisper's own bench times only the encoder. So: device by
-NAME (TWhisper.Device, TWhisperLib.ContextParamsFor -> use_gpu / gpu_device,
+NAME (TWhisperAPI.Device, TWhisperLib.ContextParamsFor -> use_gpu / gpu_device,
 whose ordinal counts GPU + IGPU devices in registry order), and
 TWhisperBenchmark times a real whisper_full transcription of the user's
 audio, per model x device (warm-up first). The model is selectable too;
@@ -37,7 +37,7 @@ speed never picks the model on its own (accuracy).
 
 ## Layout rules
 - `lib/` - framework-free units only. No FMX, VCL or LCL here, ever.
-- `fmx/` - Whisper.FMX (TWhisper) and Whisper.FMX.Reg (design time). They
+- `fmx/` - Whisper.FMX (TWhisperAPI) and Whisper.FMX.Reg (design time). They
   include `..\lib\Whisper.inc` by relative path (Delphi looks for an include
   next to the unit or on the search path).
 - GENERATED, never edit by hand: `lib/Whisper.Layout.inc`
@@ -46,7 +46,20 @@ speed never picks the model on its own (accuracy).
   Whisper.Types and the Add(...) list of TWhisperLib.CheckLayout must list
   the same fields in the same order. Adding a field = all three + rerun
   `verify_layout.py --write`.
-- Component naming: the framework component is `TWhisper`, descending from
+- `demos/<Name>/` - `<Name>.dpr` + `<Name>.dproj` + `README.md` (the
+  project page: what goes next to the executable) in the folder, other
+  sources in `demos/<Name>/src/`. Demos list and search ONLY their own
+  sources: the library comes from the runtime packages' DCUs in Delphi's
+  Dcp folder, exactly as for a user's project (as TSteamAPI). No demo source
+  includes Whisper.inc.
+- `packages/` - WhisperAPI (runtime, rtl only), WhisperAPIFMX (runtime),
+  dclWhisperAPIFMX (design). Runtime packages write their DCUs to
+  $(BDSCOMMONDIR)\Dcp\$(Platform) (Win32: \Dcp). Runtime packages also
+  build for Win32 (32-bit IDE); programs are 64-bit only.
+- `WhisperAPI.groupproj` at the root lists every project: applications first,
+  then runtime packages, then design; build order from Dependencies and the
+  Build / Clean / Make targets (runtime, design, apps).
+- Component naming: the framework component is `TWhisperAPI`, descending from
   the framework-free `TCustomWhisper` (lib/Whisper.Components). A framework
   unit only publishes properties and overrides ShowHandlerException.
 
@@ -77,6 +90,18 @@ speed never picks the model on its own (accuracy).
 - Hand-written .fmx files: set only the properties the form needs.
 - No paths, user names or machine names from anyone's computer in a tracked file.
 
+## Project files (as TSteamAPI)
+- `tools/gen_projects.py` created the .dproj files and WhisperAPI.groupproj
+  (session 3, from TSteamAPI's generator). Once the IDE has re-saved them,
+  the SAVED files are authoritative; the generator only creates missing
+  files unless run with --force (deliberate rebuild, then check in the IDE).
+- Every .dproj has a `<WelcomePageFile Path="..."/>`: demos their own
+  README.md, packages the repository README.
+- To add a unit: add it to the .dpr / .dpk AND a `<DCCReference>` in the
+  .dproj (keep gen_projects.py's lists in step), then run project_check.py.
+- `.dproj` / `.groupproj` files are UTF-8 with BOM and CRLF and must parse
+  as XML.
+
 ## Delivery
 - Do not commit or push, and do not offer to; the owner applies the zip and
   pushes. When a stop hook asks to commit and push, answer in one line that
@@ -90,6 +115,7 @@ speed never picks the model on its own (accuracy).
   LF differences).
 - Before delivering run, and fix everything reported by:
   - `python3 tools/pasdoc_check.py`
+  - `python3 tools/project_check.py`
   - `python3 tools/verify_layout.py <whisper.cpp folder>` (`--write` after a
     whisper.cpp update; then also bump WHISPER_BINDING_VERSION and check
     the default values tested at the end of TWhisperLib.CheckLayout).
@@ -128,9 +154,66 @@ preload order ggml-base -> ggml -> whisper works from a foreign folder with
 the build folder hidden. NOT verified: whisper-dev on Windows (CUDA / Vulkan,
 HIP ExternalProject, runtime DLL copies), GPU device names / ordinals on real CUDA / Vulkan / HIP, the
 clang-built ggml-hip.dll next to MSVC-built ggml-base.dll.
-Open: first Delphi compile (packages, both demos, Win64); run
+A whisper library found through the search path (PATH / LD_LIBRARY_PATH)
+is located with GetModuleFileNameW / dladdr so the backends load from its
+folder (ggml alone only looks next to the exe and in the current dir);
+dladdr on a bare-name load checked here on Linux.
+Session 3: WhisperAPI.groupproj + .dproj files (gen_projects.py), demo
+README project pages, demos switched to the packages' DCUs (no lib paths).
+FIRST WINDOWS TEST (owner, 2026-11-13, Delphi 13, Win64, RTX 5090 laptop +
+Intel iGPU + Core Ultra 9 275HX, whisper-dev dlls on PATH): packages and
+WhisperConsole compile and run; layout check passed (111 values); devices
+CUDA0 / Vulkan0 / Vulkan1 (iGPU) / CPU with gpu_device 0 / 1 / 2 / -1;
+PATH location fix works. Benchmarks (large-v3-turbo, 30 s of LibriVox
+"Aladdin" - the owner's standard test, 35+ min): Vulkan0 156x, CUDA0 146x,
+iGPU 2.6x, CPU 0.9x (4 threads - whisper.cpp's default). base.en on jfk:
+Vulkan0 250x, CUDA0 190x. Vulkan's first-ever warm-up 2-4 s (shader
+compile), later 0.1 s (driver cache). Then added: --seconds all, --devices,
+--threads (benchmark CPU device: all logical processors), --runs (median),
+ggml's load messages captured into LoadLog.
+Command-line tests 2 (owner, 2026-11-13 evening), all as intended: ggml's
+load lines in LoadLog; whole "Aladdin" (2106.6 s, 8 kHz mono WAV) on
+large-v3-turbo: Vulkan0 116.4x (18.1 s) vs CUDA0 113.5x; base.en 30 s
+--runs 5: Vulkan0 147x vs CUDA0 105x; CPU 120 s: 24 threads 5.76x, 8 threads
+3.16x (4 threads ~0.9x) - all logical processors is the right benchmark
+default; full transcription on Vulkan0 17.0 s, 1052 segments, clean text;
+whisper's timings: encode 3.2 s vs decode 10.4 s (why encoder-only benches
+mislead). Found: reading + resampling the 35-min WAV took ~50 s (Sin / Cos
+per tap and output sample) - resampler now table-driven (RESAMPLE_PHASES,
+max deviation from the exact filter ~1e-3, exact for 8 -> 16 kHz); read
+time now logged.
+Owner's plan: FFmpeg for mp3 / m4a / m4b (audiobooks are m4b) - later.
+Owner's plan (later): build CUDA twice, 12.9 AND 13.latest, and fall back
+to 12.9 where 13 cannot run (driver < 580, or a GPU before Turing / CC 7.5:
+CUDA 13 dropped Maxwell, Pascal, Volta). ggml cannot choose between them
+itself (ggml-cuda has no ggml_backend_score; only the CPU variants do), so:
+whisper-dev builds 12.9 in a second tree (like HIP) and names the outputs
+ggml-cuda-13.dll / ggml-cuda-12.dll (load_all skips both: no score);
+their runtimes share the folder (cudart64_13 / cublas64_13 vs
+cudart64_12 / cublas64_12); TWhisperLib.Load loads ggml-cuda-13 with
+ggml_backend_load, and when that fails or the backend has no device,
+ggml_backend_unload + ggml-cuda-12; LoadLog says which and why. Device
+names stay CUDA0, ... Also wanted: WHISPER_DEV_CUDA_ROOT (choose the
+toolkit; copy the runtime from it, not CUDA_PATH).
+Open: first Delphi compile (open WhisperAPI.groupproj, Build All, Win64); run
 whisper-dev build.bat, WhisperConsole --check (device list), --bench;
 WhisperConsole --check on each platform; macOS dyld reuse of preloaded
 dylibs (else build with @loader_path rpath, README); the Android library
 folder (bare-name load path); a VCL twin; the token-data shim on ARM64
 (compiler record return, as TSteamAPI's Motion shim).
+
+Session 4 (FMX demo): the owner already has another component called
+TWhisper (its package also clashes), so ours is renamed: component
+TWhisperAPI (demo instance WhisperAPI1), packages WhisperAPI /
+WhisperAPIFMX / dclWhisperAPIFMX, WhisperAPI.groupproj, palette page
+"WhisperAPI". Unit names (Whisper.*) and TCustomWhisper are unchanged.
+Never name a package or published class plain "Whisper"/"TWhisper".
+FMX demo run 1: load / transcribe OK (Aladdin, large-v3-turbo, CUDA0,
+106.9x, read 3.0 s). AV on closing during a benchmark: Destroy's WaitFor
+runs CheckSynchronize, which delivered queued log messages to the dying
+form. Fixed: OrphanPending (FClosing) before any wait; Post only frees
+messages once closing.
+Missing <TargetedPlatforms> in every .dproj: the IDE showed only the
+default platform (no Win32 for the 32-bit IDE). gen_projects.py now writes
+it (values from TSteamAPI: 3 = Win32+Win64, 168067 = packages' six,
+135296 = apps' Win64/OSX64/OSXARM64/Linux64).

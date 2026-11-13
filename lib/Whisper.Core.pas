@@ -5,7 +5,7 @@
 
   Framework-free (no FMX / VCL / LCL); compiles with Delphi and FPC. Events
   of @link(TWhisperRun) run on the thread that calls
-  @link(TWhisperRun.Execute); the TWhisper component (Whisper.Components)
+  @link(TWhisperRun.Execute); the TWhisperAPI component (Whisper.Components)
   runs it on a worker thread and moves the events to the main thread.
 
   @longCode(#
@@ -307,6 +307,10 @@ type
     FMaxSeconds: Double;
     { Backing field of @link(WarmupSeconds). }
     FWarmupSeconds: Double;
+    { Backing field of @link(CpuThreads). }
+    FCpuThreads: Integer;
+    { Backing field of @link(Runs). }
+    FRuns: Integer;
     { Set by Cancel. }
     FCancel: Boolean;
     { The run in progress (for Cancel). }
@@ -348,8 +352,16 @@ type
       are set per device. Default: the library's defaults. }
     property ContextParams: TWhisperContextParams read FContextParams write FContextParams;
     { Seconds of audio in the timed run (default 30: one full encoder window,
-      the unit whisper.cpp works in). }
+      the unit whisper.cpp works in); 0 or less = the whole audio. }
     property MaxSeconds: Double read FMaxSeconds write FMaxSeconds;
+    { CPU threads when timing the CPU device: 0 (default) = every logical
+      processor (TThread.ProcessorCount). whisper.cpp's own default is at
+      most 4, which leaves most of a modern CPU idle and makes it look far
+      slower than it is. GPU devices use Params.Threads. }
+    property CpuThreads: Integer read FCpuThreads write FCpuThreads;
+    { Timed runs per model / device (default 1); with more, RunMs and Speed
+      come from the median run, so short clips give stable rankings. }
+    property Runs: Integer read FRuns write FRuns;
     { Seconds of audio in the warm-up run (default 5). }
     property WarmupSeconds: Double read FWarmupSeconds write FWarmupSeconds;
     { @true after Cancel. }
@@ -829,6 +841,7 @@ begin
   FContextParams := TWhisperLib.Instance.DefaultContextParams;
   FMaxSeconds := DEFAULT_MAX_SECONDS;
   FWarmupSeconds := DEFAULT_WARMUP_SECONDS;
+  FRuns := 1;
 end;
 
 destructor TWhisperBenchmark.Destroy;
@@ -851,7 +864,10 @@ function TWhisperBenchmark.Slice(ASeconds: Double): TWhisperSamples;
 var
   N: Integer;
 begin
-  N := Min(Length(FSamples), Max(1, Integer(Round(ASeconds * WHISPER_SAMPLE_RATE))));
+  if ASeconds <= 0 then
+    N := Length(FSamples)
+  else
+    N := Min(Length(FSamples), Max(1, Integer(Round(ASeconds * WHISPER_SAMPLE_RATE))));
   Result := Copy(FSamples, 0, N);
 end;
 
@@ -877,6 +893,9 @@ var
   T: TWhisperTranscription;
   Timed: TWhisperSamples;
   Start: TDateTime;
+  Times: array of Int64;
+  I, J: Integer;
+  Tmp: Int64;
 begin
   Result.ModelFile := AModelFile;
   Result.Device := ADevice;
@@ -885,6 +904,8 @@ begin
   Result.LoadMs := 0;
   Result.WarmupMs := 0;
   Result.RunMs := 0;
+  Result.Runs := 0;
+  Result.Threads := 0;
   Result.AudioSeconds := 0;
   Result.Speed := 0;
   Result.Text := '';
@@ -905,6 +926,14 @@ begin
       P := TWhisperParams.Create;
       if FParams <> nil then
         P.Assign(FParams);
+      if ADevice.DeviceType = wdtCPU then
+      begin
+        if FCpuThreads > 0 then
+          P.Threads := FCpuThreads
+        else
+          P.Threads := TThread.ProcessorCount;
+      end;
+      Result.Threads := P.Threads;
       R := TWhisperRun.Create(Model, P);
       FCurrentRun := R;
       if FCancel then
@@ -916,12 +945,30 @@ begin
       if FCancel then
         Exit;
       Timed := Slice(FMaxSeconds);
-      T := R.Execute(Timed);
-      if T.ErrorMessage <> '' then
-        raise EWhisperError.Create('Timed run failed: ' + T.ErrorMessage);
-      if T.Cancelled then
-        Exit;
-      Result.RunMs := T.ElapsedMs;
+      SetLength(Times, Max(1, FRuns));
+      for I := 0 to High(Times) do
+      begin
+        T := R.Execute(Timed);
+        if T.ErrorMessage <> '' then
+          raise EWhisperError.Create('Timed run failed: ' + T.ErrorMessage);
+        if T.Cancelled then
+          Exit;
+        Times[I] := T.ElapsedMs;
+      end;
+      // median (insertion sort: a handful of values)
+      for I := 1 to High(Times) do
+      begin
+        Tmp := Times[I];
+        J := I - 1;
+        while (J >= 0) and (Times[J] > Tmp) do
+        begin
+          Times[J + 1] := Times[J];
+          Dec(J);
+        end;
+        Times[J + 1] := Tmp;
+      end;
+      Result.RunMs := Times[High(Times) div 2];
+      Result.Runs := Length(Times);
       Result.AudioSeconds := Length(Timed) / WHISPER_SAMPLE_RATE;
       Result.Speed := Result.AudioSeconds * 1000 / Max(Int64(1), Result.RunMs);
       Result.Text := Trim(WhisperSegmentsToText(T.Segments));

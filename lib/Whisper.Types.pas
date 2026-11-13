@@ -547,8 +547,13 @@ type
     { First (warm-up) run, ms: includes one-time costs such as shader /
       kernel compilation. }
     WarmupMs: Int64;
-    { Timed run, ms: the figure the choice is based on. }
+    { Timed run, ms: the figure the choice is based on (the median when
+      there were several runs). }
     RunMs: Int64;
+    { Timed runs made. }
+    Runs: Integer;
+    { CPU threads whisper.cpp was given. }
+    Threads: Integer;
     { Audio of the timed run, seconds. }
     AudioSeconds: Double;
     { Audio seconds per wall-clock second of the timed run (higher is faster). }

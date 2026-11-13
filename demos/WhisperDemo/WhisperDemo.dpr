@@ -1,18 +1,17 @@
-{ WhisperDemo - FireMonkey demo of the whisper.cpp binding: load a model,
-  transcribe a WAV file on a worker thread, watch the segments arrive, save
-  them as text / SubRip / WebVTT. }
 program WhisperDemo;
+
+{ FireMonkey demo of the whisper.cpp binding: choose a model and a compute
+  device, benchmark the devices, transcribe a WAV file on a worker thread,
+  watch the segments arrive, save them as text / SubRip / WebVTT.
+
+  Like any user project it lists only its own sources: the library (Whisper.*
+  units) comes from the runtime packages WhisperAPI and WhisperAPIFMX, whose DCUs
+  are in Delphi's Dcp folder - build them first (WhisperAPI.groupproj does).
+  The whisper.cpp libraries go next to the executable (README.md). }
 
 uses
   System.StartUpCopy,
   FMX.Forms,
-  Whisper.Types in '..\..\lib\Whisper.Types.pas',
-  Whisper.DynLib in '..\..\lib\Whisper.DynLib.pas',
-  Whisper.API in '..\..\lib\Whisper.API.pas',
-  Whisper.Audio in '..\..\lib\Whisper.Audio.pas',
-  Whisper.Core in '..\..\lib\Whisper.Core.pas',
-  Whisper.Components in '..\..\lib\Whisper.Components.pas',
-  Whisper.FMX in '..\..\fmx\Whisper.FMX.pas',
   uMain in 'src\uMain.pas' {frmMain};
 
 {$R *.res}

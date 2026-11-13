@@ -1,26 +1,26 @@
-(* @abstract(@link(TWhisper) for FireMonkey - the non-visual component that
+(* @abstract(@link(TWhisperAPI) for FireMonkey - the non-visual component that
   transcribes speech with whisper.cpp.)
 
-  Drop one on a form (palette page "Whisper"), set
-  @link(TWhisper.ModelFile) and @link(TWhisper.Active), then call
+  Drop one on a form (palette page "WhisperAPI"), set
+  @link(TWhisperAPI.ModelFile) and @link(TWhisperAPI.Active), then call
   TranscribeFileAsync or TranscribeAsync. Every event arrives on the main
   thread. Everything except the exception display lives in the
   framework-free @code(TCustomWhisper) (Whisper.Components); a VCL or LCL
-  unit would declare a TWhisper of the same name and behaviour.
+  unit would declare a TWhisperAPI of the same name and behaviour.
 
   @longCode(#
   procedure TfrmMain.FormCreate(Sender: TObject);
   begin
-    Whisper1.ModelFile := TPath.Combine(ModelFolder, 'ggml-base.bin');
-    Whisper1.Active := True;          // OnLoaded / OnLoadFailed follow
+    WhisperAPI1.ModelFile := TPath.Combine(ModelFolder, 'ggml-base.bin');
+    WhisperAPI1.Active := True;          // OnLoaded / OnLoadFailed follow
   end;
 
   procedure TfrmMain.btnGoClick(Sender: TObject);
   begin
-    Whisper1.TranscribeFileAsync(edAudio.Text);
+    WhisperAPI1.TranscribeFileAsync(edAudio.Text);
   end;
 
-  procedure TfrmMain.Whisper1Segment(Sender: TObject; const ASegment: TWhisperSegment);
+  procedure TfrmMain.WhisperAPI1Segment(Sender: TObject; const ASegment: TWhisperSegment);
   begin
     memText.Lines.Add(ASegment.Text);
   end;
@@ -36,10 +36,10 @@ uses
   Whisper.Types, Whisper.Components;
 
 type
-  { FireMonkey TWhisper: @code(TCustomWhisper) with its properties
+  { FireMonkey TWhisperAPI: @code(TCustomWhisper) with its properties
     published and handler exceptions shown by Application.ShowException. }
   [ComponentPlatformsAttribute(WHISPER_COMPONENT_PLATFORMS)]
-  TWhisper = class(TCustomWhisper)
+  TWhisperAPI = class(TCustomWhisper)
   protected
     { Application.ShowException (Application.HandleException would show
       ExceptObject, which is nil outside an except block). }
@@ -119,9 +119,9 @@ type
 
 implementation
 
-{ TWhisper }
+{ TWhisperAPI }
 
-procedure TWhisper.ShowHandlerException(E: Exception);
+procedure TWhisperAPI.ShowHandlerException(E: Exception);
 begin
   Application.ShowException(E);
 end;

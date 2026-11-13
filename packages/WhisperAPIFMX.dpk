@@ -1,0 +1,17 @@
+package WhisperAPIFMX;
+
+{ whisper.cpp binding for FireMonkey - runtime. }
+
+{$DESCRIPTION 'whisper.cpp binding for FireMonkey - runtime'}
+{$RUNONLY}
+{$IMPLICITBUILD ON}
+
+requires
+  rtl,
+  fmx,
+  WhisperAPI;
+
+contains
+  Whisper.FMX in '..\fmx\Whisper.FMX.pas';
+
+end.

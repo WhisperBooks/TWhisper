@@ -219,16 +219,16 @@ object frmMain: TfrmMain
     Size.PlatformDefault = False
     TabOrder = 12
   end
-  object Whisper1: TWhisper
-    OnLoaded = Whisper1Loaded
-    OnLoadFailed = Whisper1LoadFailed
-    OnUnloaded = Whisper1Unloaded
-    OnSegment = Whisper1Segment
-    OnProgress = Whisper1Progress
-    OnComplete = Whisper1Complete
-    OnLog = Whisper1Log
-    OnBenchmarkResult = Whisper1BenchmarkResult
-    OnBenchmarkComplete = Whisper1BenchmarkComplete
+  object WhisperAPI1: TWhisperAPI
+    OnLoaded = WhisperAPI1Loaded
+    OnLoadFailed = WhisperAPI1LoadFailed
+    OnUnloaded = WhisperAPI1Unloaded
+    OnSegment = WhisperAPI1Segment
+    OnProgress = WhisperAPI1Progress
+    OnComplete = WhisperAPI1Complete
+    OnLog = WhisperAPI1Log
+    OnBenchmarkResult = WhisperAPI1BenchmarkResult
+    OnBenchmarkComplete = WhisperAPI1BenchmarkComplete
     Left = 848
     Top = 168
   end

@@ -11,7 +11,10 @@
 
   @bold(Library search.) With no explicit path, the folder of the
   executable is tried first (on macOS also the bundle's Contents/Frameworks),
-  then the operating system's search path. Before whisper itself, the ggml
+  then the operating system's search path (on Windows: PATH). A library found
+  through the search path is located afterwards (GetModuleFileNameW /
+  dladdr) and its folder used for the backends, as ggml itself only looks in
+  the executable's folder and the current directory. Before whisper itself, the ggml
   libraries found in the same folder (ggml-base, the backends, ggml) are
   loaded by full path: the dependencies of whisper are then already in the
   process, wherever its folder is (Linux / Android dlopen does not look next
@@ -410,6 +413,9 @@ type
     FLibraryFolder: string;
     { Backing field of @link(BackendsLoaded). }
     FBackendsLoaded: Boolean;
+    { @true while Load runs: log lines (ggml reporting the backends it
+      loads or skips) go to LoadLog instead of stderr. }
+    FCapturing: Boolean;
     { Creates the object; Load does the work. }
     constructor CreateLib;
     { Loads the ggml libraries found in AFolder, in dependency order:
@@ -555,12 +561,15 @@ type
     property GgmlFlat: PWhisperGgmlFlat read GetGgmlFlat;
     { ggml device exports none of the libraries has. }
     property GgmlMissingSymbols: TStringList read FGgmlMissing;
-    { Folder the whisper library was loaded from ('' when found through the
-      OS search path); backends are loaded from here. }
+    { Folder the whisper library was loaded from - also when it was found
+      through the OS search path (located with GetModuleFileNameW / dladdr);
+      '' only when the OS could not tell. Backends are loaded from here. }
     property LibraryFolder: string read FLibraryFolder;
     { @true once ggml_backend_load_all_from_path has run. }
     property BackendsLoaded: Boolean read FBackendsLoaded;
-    { What happened while loading: libraries loaded, dependencies skipped. }
+    { What happened while loading: libraries loaded, dependencies skipped,
+      and ggml's own lines about the backends it loaded or skipped (CUDA /
+      Vulkan devices found, ...). }
     property LoadLog: TStringList read FLoadLog;
   end;
 
@@ -608,11 +617,89 @@ begin
   {$endif}
 end;
 
+{ Full path of the file ALib was loaded from, asked from the OS: needed when
+  it was found through the search path (PATH, LD_LIBRARY_PATH). ASymbol is
+  an export of ALib (POSIX: dladdr needs an address inside the library).
+  Returns '' when the OS cannot tell. }
+function LoadedModulePath(ALib: TWhisperDynLib; const ASymbol: string): string;
+{$ifdef MSWINDOWS}
+type
+  TGetModuleFileNameW = function(hModule: NativeUInt; lpFilename: PWideChar; nSize: Cardinal): Cardinal; stdcall;
+const
+  MAX_LONG_PATH = 32768;
+var
+  Kernel: TWhisperDynLib;
+  GetModuleFileNameW: TGetModuleFileNameW;
+  Buf: UnicodeString;
+  N: Cardinal;
+begin
+  Result := '';
+  Kernel := TWhisperDynLib.Load('kernel32.dll', False);
+  if Kernel = nil then
+    Exit;
+  try
+    if not Kernel.Bind(GetModuleFileNameW, 'GetModuleFileNameW', False) then
+      Exit;
+    SetLength(Buf, MAX_LONG_PATH);
+    N := GetModuleFileNameW(NativeUInt(ALib.Handle), PWideChar(Buf), MAX_LONG_PATH);
+    if (N > 0) and (N < MAX_LONG_PATH) then
+      Result := string(Copy(Buf, 1, N));
+  finally
+    Kernel.Free;
+  end;
+end;
+{$else}
+type
+  { Dl_info of dlfcn.h. }
+  TDlInfo = record
+    { Path of the object containing the address. }
+    dli_fname: PAnsiChar;
+    { Base address of that object. }
+    dli_fbase: Pointer;
+    { Nearest symbol. }
+    dli_sname: PAnsiChar;
+    { Its address. }
+    dli_saddr: Pointer;
+  end;
+  TDladdr = function(addr: Pointer; info: Pointer): Integer; cdecl;
+var
+  Libc: TWhisperDynLib;
+  Dladdr: TDladdr;
+  Info: TDlInfo;
+  Addr: Pointer;
+begin
+  Result := '';
+  Addr := nil;
+  if not ALib.Bind(Addr, ASymbol, False) then
+    Exit;
+  {$ifdef WHISPER_MACOS}
+  Libc := TWhisperDynLib.LoadFirst(['/usr/lib/libSystem.B.dylib', 'libSystem.B.dylib'], False);
+  {$else}
+  Libc := TWhisperDynLib.LoadFirst(['libc.so.6', 'libdl.so.2', 'libdl.so'], False);
+  {$endif}
+  if Libc = nil then
+    Exit;
+  try
+    if not Libc.Bind(Dladdr, 'dladdr', False) then
+      Exit;
+    FillChar(Info, SizeOf(Info), 0);
+    if (Dladdr(Addr, @Info) <> 0) and (Info.dli_fname <> nil) then
+      Result := ExpandFileName(string(UTF8String(Info.dli_fname)));
+  finally
+    Libc.Free;
+  end;
+end;
+{$endif}
+
 { The C log callback: forwards to the library object. }
 procedure WhisperLogTrampoline(level: TWhisperLogLevel; text: PAnsiChar; user_data: Pointer); cdecl;
 begin
   try
-    if GWhisperLib <> nil then
+    // user_data is the library object (also while it is still loading and
+    // GWhisperLib is not set yet)
+    if user_data <> nil then
+      TWhisperLib(user_data).HandleLog(level, text)
+    else if GWhisperLib <> nil then
       GWhisperLib.HandleLog(level, text);
   except
     // never let an exception unwind through C frames
@@ -1050,10 +1137,32 @@ begin
     end;
     if Lib.FLib = nil then
       raise EWhisperError.Create('Cannot load the whisper.cpp library. Tried:' + Tried);
+    if Lib.FLibraryFolder = '' then
+    begin
+      // found through the search path: ggml must be told the real folder
+      Path := LoadedModulePath(Lib.FLib, 'whisper_version');
+      if Path <> '' then
+      begin
+        Lib.FLibraryFolder := ExtractFilePath(Path);
+        Lib.FLoadLog.Add('Found through the search path: ' + Path);
+      end
+      else
+        Lib.FLoadLog.Add('Found through the search path; its folder is unknown, so backends are ' +
+          'only looked for next to the executable and in the current directory');
+    end;
     Lib.BindAll;
     Lib.FVersion := WhisperStr(Lib.FFlat.whisper_version());
     Lib.BindGgml;
-    Lib.LoadBackends(Lib.FLibraryFolder);
+    // ggml reports each backend it loads (or why not) through the log:
+    // keep those lines in LoadLog instead of letting them go to stderr
+    Lib.FCapturing := True;
+    try
+      Lib.UpdateLogHook;
+      Lib.LoadBackends(Lib.FLibraryFolder);
+    finally
+      Lib.FCapturing := False;
+      Lib.UpdateLogHook;
+    end;
     Devs := Lib.Devices;
     if Length(Devs) = 0 then
       Lib.FLoadLog.Add('No compute device listed (no ggml device exports, or no backend loaded)')
@@ -1446,12 +1555,12 @@ begin
     Exit;
   FLogLock.Acquire;
   try
-    Hook := Length(FLogListeners) > 0;
+    Hook := (Length(FLogListeners) > 0) or FCapturing;
   finally
     FLogLock.Release;
   end;
   if Hook then
-    FFlat.whisper_log_set(WhisperLogTrampoline, nil)
+    FFlat.whisper_log_set(WhisperLogTrampoline, Self)
   else
     FFlat.whisper_log_set(nil, nil);
 end;
@@ -1501,12 +1610,16 @@ begin
 end;
 
 procedure TWhisperLib.EmitLog(ALevel: TWhisperLogLevel; const AText: string);
+const
+  LEVEL_TAGS: array[TWhisperLogLevel] of string = ('', 'debug: ', '', 'warning: ', 'ERROR: ', '');
 var
   Listeners: TWhisperLogEventArray;
   I: Integer;
 begin
   FLogLock.Acquire;
   try
+    if FCapturing then
+      FLoadLog.Add(LEVEL_TAGS[ALevel] + AText);
     Listeners := Copy(FLogListeners, 0, Length(FLogListeners));
   finally
     FLogLock.Release;

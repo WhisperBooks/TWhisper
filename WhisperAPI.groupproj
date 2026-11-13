@@ -1,0 +1,84 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{35EB8264-BBED-4110-9F1B-39FD3C68FBEA}</ProjectGuid>
+    </PropertyGroup>
+    <ItemGroup>
+        <Projects Include="demos\WhisperDemo\WhisperDemo.dproj">
+            <Dependencies>packages\WhisperAPIFMX.dproj</Dependencies>
+        </Projects>
+        <Projects Include="demos\WhisperConsole\WhisperConsole.dproj">
+            <Dependencies>packages\WhisperAPI.dproj</Dependencies>
+        </Projects>
+        <Projects Include="packages\WhisperAPI.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="packages\WhisperAPIFMX.dproj">
+            <Dependencies>packages\WhisperAPI.dproj</Dependencies>
+        </Projects>
+        <Projects Include="packages\dclWhisperAPIFMX.dproj">
+            <Dependencies>packages\WhisperAPIFMX.dproj</Dependencies>
+        </Projects>
+    </ItemGroup>
+    <ProjectExtensions>
+        <Borland.Personality>Default.Personality.12</Borland.Personality>
+        <Borland.ProjectType/>
+        <BorlandProject>
+            <Default.Personality/>
+        </BorlandProject>
+    </ProjectExtensions>
+    <Target Name="WhisperDemo">
+        <MSBuild Projects="demos\WhisperDemo\WhisperDemo.dproj"/>
+    </Target>
+    <Target Name="WhisperDemo:Clean">
+        <MSBuild Projects="demos\WhisperDemo\WhisperDemo.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="WhisperDemo:Make">
+        <MSBuild Projects="demos\WhisperDemo\WhisperDemo.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="WhisperConsole">
+        <MSBuild Projects="demos\WhisperConsole\WhisperConsole.dproj"/>
+    </Target>
+    <Target Name="WhisperConsole:Clean">
+        <MSBuild Projects="demos\WhisperConsole\WhisperConsole.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="WhisperConsole:Make">
+        <MSBuild Projects="demos\WhisperConsole\WhisperConsole.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="WhisperAPI">
+        <MSBuild Projects="packages\WhisperAPI.dproj"/>
+    </Target>
+    <Target Name="WhisperAPI:Clean">
+        <MSBuild Projects="packages\WhisperAPI.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="WhisperAPI:Make">
+        <MSBuild Projects="packages\WhisperAPI.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="WhisperAPIFMX">
+        <MSBuild Projects="packages\WhisperAPIFMX.dproj"/>
+    </Target>
+    <Target Name="WhisperAPIFMX:Clean">
+        <MSBuild Projects="packages\WhisperAPIFMX.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="WhisperAPIFMX:Make">
+        <MSBuild Projects="packages\WhisperAPIFMX.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="dclWhisperAPIFMX">
+        <MSBuild Projects="packages\dclWhisperAPIFMX.dproj"/>
+    </Target>
+    <Target Name="dclWhisperAPIFMX:Clean">
+        <MSBuild Projects="packages\dclWhisperAPIFMX.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="dclWhisperAPIFMX:Make">
+        <MSBuild Projects="packages\dclWhisperAPIFMX.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="Build">
+        <CallTarget Targets="WhisperAPI;WhisperAPIFMX;dclWhisperAPIFMX;WhisperDemo;WhisperConsole"/>
+    </Target>
+    <Target Name="Clean">
+        <CallTarget Targets="WhisperAPI:Clean;WhisperAPIFMX:Clean;dclWhisperAPIFMX:Clean;WhisperDemo:Clean;WhisperConsole:Clean"/>
+    </Target>
+    <Target Name="Make">
+        <CallTarget Targets="WhisperAPI:Make;WhisperAPIFMX:Make;dclWhisperAPIFMX:Make;WhisperDemo:Make;WhisperConsole:Make"/>
+    </Target>
+    <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
+</Project>

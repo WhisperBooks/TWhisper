@@ -1,8 +1,8 @@
-(* @abstract(@link(TCustomWhisper): the framework-free base of the TWhisper
+(* @abstract(@link(TCustomWhisper): the framework-free base of the TWhisperAPI
   component - library and model lifecycle, transcription on a worker
   thread, events on the main thread.)
 
-  A framework unit (Whisper.FMX) derives TWhisper from it, publishes the
+  A framework unit (Whisper.FMX) derives TWhisperAPI from it, publishes the
   properties and shows handler exceptions the framework's way; everything
   else lives here, as TCustomSteamAPI does in TSteamAPI.
 
@@ -268,6 +268,8 @@ type
     FPending: TList;
     { Guards FPending. }
     FPendingLock: TCriticalSection;
+    { @true once Destroy started: messages are no longer delivered. }
+    FClosing: Boolean;
     { @true while subscribed to the library log. }
     FLogHooked: Boolean;
     { Backing field of @link(OnLoaded). }
@@ -324,6 +326,9 @@ type
       (the framework unit uses Application.ShowException). Default:
       re-raise nothing, write nothing. }
     procedure ShowHandlerException(E: Exception); virtual;
+    { Stops message delivery for good (Destroy): queued messages are
+      orphaned and later ones are only freed. }
+    procedure OrphanPending;
     { Adds a message for the main thread (any thread). }
     procedure Post(AMessage: TWhisperQueuedMessage);
     { Delivers a message on the main thread (called by the message). }
@@ -468,7 +473,7 @@ type
 implementation
 
 uses
-  StrUtils;
+  StrUtils, DateUtils;
 
 { TWhisperQueuedMessage }
 
@@ -537,6 +542,7 @@ var
   R: TWhisperTranscription;
   M: TWhisperQueuedMessage;
   Info: TWhisperWavInfo;
+  ReadStart: TDateTime;
 begin
   FillChar(Info, SizeOf(Info), 0);
   R.Segments := nil;
@@ -550,13 +556,14 @@ begin
   try
     if FFileName <> '' then
     begin
+      ReadStart := Now;
       FSamples := WhisperLoadWav(FFileName, Info);
       M := TWhisperQueuedMessage.Create;
       M.FKind := wmkLog;
       M.FLevel := wllInfo;
-      M.FText := Format('Read %s: %d channel(s), %d Hz, %d bits, %d frames -> %d samples at %d Hz (%.2f s)',
+      M.FText := Format('Read %s: %d channel(s), %d Hz, %d bits, %d frames -> %d samples at %d Hz (%.2f s) in %d ms',
         [FFileName, Info.Channels, Info.SampleRate, Info.BitsPerSample, Info.Frames,
-         Length(FSamples), WHISPER_SAMPLE_RATE, WhisperSamplesSeconds(FSamples)]);
+         Length(FSamples), WHISPER_SAMPLE_RATE, WhisperSamplesSeconds(FSamples), MilliSecondsBetween(Now, ReadStart)]);
       FOwner.Post(M);
     end;
     R := FRun.Execute(FSamples);
@@ -699,9 +706,10 @@ begin
 end;
 
 destructor TCustomWhisper.Destroy;
-var
-  I: Integer;
 begin
+  // First stop delivery: waiting for a worker below runs CheckSynchronize,
+  // which would otherwise call the owner's handlers (a form part-destroyed).
+  OrphanPending;
   if FBenchWorker <> nil then
   begin
     FBenchWorker.Cancel;
@@ -710,23 +718,30 @@ begin
   end;
   if not (csDesigning in ComponentState) then
     DoDeactivate;
-  // Messages still in the main thread's queue: orphan them (they free
-  // themselves without calling us).
-  if FPendingLock <> nil then
-  begin
-    FPendingLock.Acquire;
-    try
-      for I := 0 to FPending.Count - 1 do
-        TWhisperQueuedMessage(FPending[I]).FOwner := nil;
-      FPending.Clear;
-    finally
-      FPendingLock.Release;
-    end;
-  end;
+  OrphanPending;   // anything posted while waiting
   FreeAndNil(FParams);
   FreeAndNil(FPending);
   FreeAndNil(FPendingLock);
   inherited;
+end;
+
+procedure TCustomWhisper.OrphanPending;
+var
+  I: Integer;
+begin
+  if FPendingLock = nil then
+    Exit;
+  FPendingLock.Acquire;
+  try
+    FClosing := True;
+    // Messages still in the main thread's queue free themselves without
+    // calling us.
+    for I := 0 to FPending.Count - 1 do
+      TWhisperQueuedMessage(FPending[I]).FOwner := nil;
+    FPending.Clear;
+  finally
+    FPendingLock.Release;
+  end;
 end;
 
 procedure TCustomWhisper.Loaded;
@@ -919,7 +934,7 @@ var
   P: TWhisperParams;
 begin
   if not FActive then
-    raise EWhisperError.Create('TWhisper is not active: set ModelFile and Active first');
+    raise EWhisperError.Create('TWhisperAPI is not active: set ModelFile and Active first');
   if Busy then
     raise EWhisperError.Create('A transcription or benchmark is already running');
   P := BuildRunParams;
@@ -953,7 +968,7 @@ var
   P: TWhisperParams;
 begin
   if not FActive then
-    raise EWhisperError.Create('TWhisper is not active: set ModelFile and Active first');
+    raise EWhisperError.Create('TWhisperAPI is not active: set ModelFile and Active first');
   if Busy then
     raise EWhisperError.Create('A transcription or benchmark is already running');
   P := BuildRunParams;
@@ -1171,10 +1186,15 @@ end;
 
 procedure TCustomWhisper.Post(AMessage: TWhisperQueuedMessage);
 begin
-  AMessage.FOwner := Self;
   FPendingLock.Acquire;
   try
-    FPending.Add(AMessage);
+    if FClosing then
+      AMessage.FOwner := nil   // Deliver only frees it
+    else
+    begin
+      AMessage.FOwner := Self;
+      FPending.Add(AMessage);
+    end;
   finally
     FPendingLock.Release;
   end;
