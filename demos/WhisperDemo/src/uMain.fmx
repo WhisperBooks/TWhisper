@@ -1,0 +1,213 @@
+object frmMain: TfrmMain
+  Left = 0
+  Top = 0
+  Caption = 'Whisper demo'
+  ClientHeight = 640
+  ClientWidth = 960
+  FormFactor.Width = 320
+  FormFactor.Height = 480
+  FormFactor.Devices = [Desktop]
+  OnCreate = FormCreate
+  OnClose = FormClose
+  DesignerMasterStyle = 0
+  object layTop: TLayout
+    Align = Top
+    Size.Width = 960.000000000000000000
+    Size.Height = 136.000000000000000000
+    Size.PlatformDefault = False
+    object lblModel: TLabel
+      Position.X = 8.000000000000000000
+      Position.Y = 10.000000000000000000
+      Size.Width = 88.000000000000000000
+      Size.Height = 22.000000000000000000
+      Size.PlatformDefault = False
+      Text = 'Model'
+    end
+    object edModel: TEdit
+      Anchors = [akLeft, akTop, akRight]
+      Position.X = 100.000000000000000000
+      Position.Y = 8.000000000000000000
+      Size.Width = 764.000000000000000000
+      Size.Height = 24.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 0
+    end
+    object btnModel: TButton
+      Anchors = [akTop, akRight]
+      Position.X = 872.000000000000000000
+      Position.Y = 8.000000000000000000
+      Size.Width = 80.000000000000000000
+      Size.Height = 24.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 1
+      Text = 'Browse...'
+      OnClick = btnModelClick
+    end
+    object lblAudio: TLabel
+      Position.X = 8.000000000000000000
+      Position.Y = 42.000000000000000000
+      Size.Width = 88.000000000000000000
+      Size.Height = 22.000000000000000000
+      Size.PlatformDefault = False
+      Text = 'Audio (WAV)'
+    end
+    object edAudio: TEdit
+      Anchors = [akLeft, akTop, akRight]
+      Position.X = 100.000000000000000000
+      Position.Y = 40.000000000000000000
+      Size.Width = 764.000000000000000000
+      Size.Height = 24.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 2
+    end
+    object btnAudio: TButton
+      Anchors = [akTop, akRight]
+      Position.X = 872.000000000000000000
+      Position.Y = 40.000000000000000000
+      Size.Width = 80.000000000000000000
+      Size.Height = 24.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 3
+      Text = 'Browse...'
+      OnClick = btnAudioClick
+    end
+    object lblLanguage: TLabel
+      Position.X = 8.000000000000000000
+      Position.Y = 74.000000000000000000
+      Size.Width = 88.000000000000000000
+      Size.Height = 22.000000000000000000
+      Size.PlatformDefault = False
+      Text = 'Language'
+    end
+    object cbLanguage: TComboBox
+      Position.X = 100.000000000000000000
+      Position.Y = 72.000000000000000000
+      Size.Width = 100.000000000000000000
+      Size.Height = 24.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 4
+    end
+    object chkTranslate: TCheckBox
+      Position.X = 212.000000000000000000
+      Position.Y = 74.000000000000000000
+      Size.Width = 160.000000000000000000
+      Size.Height = 20.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 5
+      Text = 'Translate to English'
+    end
+    object chkGPU: TCheckBox
+      Position.X = 380.000000000000000000
+      Position.Y = 74.000000000000000000
+      Size.Width = 90.000000000000000000
+      Size.Height = 20.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 6
+      IsChecked = True
+      Text = 'Use GPU'
+    end
+    object btnLoad: TButton
+      Position.X = 480.000000000000000000
+      Position.Y = 72.000000000000000000
+      Size.Width = 110.000000000000000000
+      Size.Height = 24.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 7
+      Text = 'Load model'
+      OnClick = btnLoadClick
+    end
+    object btnTranscribe: TButton
+      Position.X = 598.000000000000000000
+      Position.Y = 72.000000000000000000
+      Size.Width = 110.000000000000000000
+      Size.Height = 24.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 8
+      Text = 'Transcribe'
+      OnClick = btnTranscribeClick
+    end
+    object btnCancel: TButton
+      Position.X = 716.000000000000000000
+      Position.Y = 72.000000000000000000
+      Size.Width = 80.000000000000000000
+      Size.Height = 24.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 9
+      Text = 'Cancel'
+      OnClick = btnCancelClick
+    end
+    object btnSave: TButton
+      Position.X = 804.000000000000000000
+      Position.Y = 72.000000000000000000
+      Size.Width = 100.000000000000000000
+      Size.Height = 24.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 10
+      Text = 'Save as...'
+      OnClick = btnSaveClick
+    end
+    object lblStatus: TLabel
+      Position.X = 8.000000000000000000
+      Position.Y = 106.000000000000000000
+      Size.Width = 88.000000000000000000
+      Size.Height = 22.000000000000000000
+      Size.PlatformDefault = False
+      Text = 'No model'
+    end
+    object ProgressBar1: TProgressBar
+      Anchors = [akLeft, akTop, akRight]
+      Position.X = 100.000000000000000000
+      Position.Y = 108.000000000000000000
+      Size.Width = 852.000000000000000000
+      Size.Height = 18.000000000000000000
+      Size.PlatformDefault = False
+    end
+  end
+  object memLog: TMemo
+    Align = Bottom
+    ReadOnly = True
+    TextSettings.WordWrap = True
+    Position.Y = 456.000000000000000000
+    Size.Width = 960.000000000000000000
+    Size.Height = 184.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 11
+  end
+  object Splitter1: TSplitter
+    Align = Bottom
+    Cursor = crVSplit
+    MinSize = 20.000000000000000000
+    Position.Y = 450.000000000000000000
+    Size.Width = 960.000000000000000000
+    Size.Height = 6.000000000000000000
+    Size.PlatformDefault = False
+  end
+  object memText: TMemo
+    Align = Client
+    ReadOnly = True
+    TextSettings.WordWrap = True
+    Size.Width = 960.000000000000000000
+    Size.Height = 314.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 12
+  end
+  object Whisper1: TWhisper
+    OnLoaded = Whisper1Loaded
+    OnLoadFailed = Whisper1LoadFailed
+    OnUnloaded = Whisper1Unloaded
+    OnSegment = Whisper1Segment
+    OnProgress = Whisper1Progress
+    OnComplete = Whisper1Complete
+    OnLog = Whisper1Log
+    Left = 848
+    Top = 168
+  end
+  object OpenDialog1: TOpenDialog
+    Left = 848
+    Top = 232
+  end
+  object SaveDialog1: TSaveDialog
+    Left = 848
+    Top = 296
+  end
+end

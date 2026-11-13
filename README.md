@@ -1,0 +1,205 @@
+# TWhisper - whisper.cpp for Delphi (FMX)
+
+A Pascal binding of [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
+(local speech-to-text with OpenAI's Whisper models) for Delphi FireMonkey.
+It follows the structure and source rules of
+[TSteamAPI](https://github.com/G3DGames/TSteamAPI):
+
+- a framework-free core in `lib/` that also compiles with FPC 3.2.2
+- one non-visual component, `TWhisper`, for FMX in `fmx/`
+- runtime and design-time packages
+- a GUI demo and a console demo
+
+Binding checked against whisper.h **1.9.5** (`WHISPER_BINDING_VERSION`).
+
+## Dynamic loading
+
+Nothing is linked statically and there are no `external` declarations. At run
+time `TWhisperLib.Load` loads the library with `TWhisperDynLib` (adapted from
+TSteamAPI's `TSteamDynLib`) and binds every export by name.
+
+Where the library is looked for, in order:
+
+1. `LibraryPath`, which can be a file or a folder.
+2. The executable's folder; on macOS, also the bundle's `Contents/Frameworks`.
+3. The operating system's search path.
+
+| Platform | Library | Loaded first, from the same folder (when present) |
+|---|---|---|
+| Windows | `whisper.dll` (MinGW: `libwhisper.dll`) | `ggml-base.dll`, `ggml-cpu.dll`, GPU backends, `ggml.dll` |
+| Linux / Android | `libwhisper.so`, `libwhisper.so.1` | `libggml-base.so`, `libggml-cpu.so`, GPU backends, `libggml.so` (or `.so.0`) |
+| macOS | `libwhisper.dylib`, `libwhisper.1.dylib` | the same, `.dylib` |
+
+The ggml libraries are preloaded by full path. That way whisper's
+dependencies are already in the process wherever its folder is. Linux dlopen
+does not look next to a library, and Windows looks next to the executable,
+not next to a whisper.dll loaded from somewhere else. A GPU backend whose own
+runtime is missing (for example CUDA) is skipped, and the skip is logged.
+
+Required exports raise `EWhisperError` on load when missing. All other
+exports are optional: check them with `Assigned(Lib.Flat.xxx)`.
+`Lib.MissingSymbols` lists the ones the library lacks.
+
+## Getting the libraries and a model
+
+Build whisper.cpp as shared libraries (one build per target platform):
+
+```
+git clone https://github.com/ggml-org/whisper.cpp
+cd whisper.cpp
+cmake -B build -DBUILD_SHARED_LIBS=ON -DWHISPER_BUILD_EXAMPLES=OFF -DWHISPER_BUILD_TESTS=OFF
+cmake --build build -j --config Release
+```
+
+- **Win32:** add `-A Win32`. GPU backends use their usual switches
+  (`-DGGML_CUDA=ON`, `-DGGML_VULKAN=ON`; Metal is on by default on macOS).
+- **Output:** the libraries land in `build/bin` (`build/bin/Release` with
+  Visual Studio). Copy all of them next to your executable.
+- **Linux / macOS:** also add `-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON` and
+  `-DCMAKE_INSTALL_RPATH='$ORIGIN'` (macOS: `@loader_path`). The libraries
+  then find each other wherever they are copied, even without the preloading
+  above.
+
+Models (ggml format):
+
+```
+sh ./models/download-ggml-model.sh base.en      # or tiny, small, medium, large-v3-turbo, ...
+sh ./models/download-vad-model.sh silero-v6.2.0 # optional, for Vad = True
+```
+
+`*.en` models are English only; the others are multilingual and can
+translate to English. Audio must be 16 kHz mono float. `Whisper.Audio` reads
+WAV files in any rate, bit depth and channel count and converts them. Convert
+compressed audio first, for example:
+`ffmpeg -i in.mp3 -ar 16000 -ac 1 -c:a pcm_s16le out.wav`.
+
+## Using the component
+
+1. Build and install the packages (see below), drop a `TWhisper`
+   (palette page "Whisper") on a form and set `ModelFile`.
+2. Set `Active := True` (in code, or in the form file). This loads the
+   library, checks the record layout and loads the model. A failure fires
+   `OnLoadFailed`, or is shown if that event is not assigned. It never
+   raises.
+3. Call `TranscribeFileAsync('speech.wav')` or `TranscribeAsync(Samples)`.
+   `OnSegment`, `OnProgress`, `OnLog` and finally `OnComplete` arrive on the
+   main thread. `Cancel` stops a run and keeps the segments so far.
+
+```pascal
+procedure TfrmMain.Whisper1Segment(Sender: TObject; const ASegment: TWhisperSegment);
+begin
+  memText.Lines.Add(Format('[%s --> %s] %s', [WhisperTimeToStr(ASegment.T0),
+    WhisperTimeToStr(ASegment.T1), ASegment.Text]));
+end;
+```
+
+`Transcribe` / `TranscribeFile` run on the calling thread instead. Published
+properties cover the common settings (Language, Translate, Threads,
+Strategy, BeamSize, TokenTimestamps, MaxSegmentLength, InitialPrompt, Vad,
+...). `Params` and `OnBeforeRun` give access to every field of
+`whisper_full_params`. `WhisperSegmentsToSrt`, `WhisperSegmentsToVtt` and
+`WhisperSegmentsToText` export a result.
+
+Without the component (a console program, a service) use the classes in
+`Whisper.Core` directly: `TWhisperModel`, `TWhisperParams` and `TWhisperRun`.
+See `demos/WhisperConsole`. The flat API is in `TWhisperLib.Instance.Flat`.
+
+## Layout
+
+```
+lib/       framework-free units (Delphi + FPC 3.2.2)
+  Whisper.inc           compiler / platform / C ABI settings ({$I} in every unit)
+  Whisper.Layout.inc    GENERATED by tools/verify_layout.py - C sizes and offsets
+  Whisper.Types         constants, enums, C records, result records
+  Whisper.DynLib        dynamic library loading (from TSteamAPI)
+  Whisper.API           TWhisperLib: loading, every export, ABI shims, layout check, log
+  Whisper.Audio         WAV reader, 16-bit PCM conversion, windowed-sinc resampler
+  Whisper.Core          TWhisperModel, TWhisperParams, TWhisperRun, text export
+  Whisper.Components    TCustomWhisper (lifecycle, worker thread, main-thread events)
+fmx/       Whisper.FMX (TWhisper), Whisper.FMX.Reg (design time)
+packages/  Whisper (runtime, rtl), WhisperFMX (runtime), dclWhisperFMX (design)
+demos/     WhisperDemo (FMX), WhisperConsole (console, smoke test)
+tools/     verify_layout.py, pasdoc_check.py
+```
+
+## Packages and demos
+
+Only the `.dpk` / `.dpr` sources are included. Delphi creates the matching
+`.dproj` (and the `.res`) when you open them.
+
+1. Open and build `packages/Whisper.dpk`, then `WhisperFMX.dpk`, for every
+   target platform you use.
+2. Install `dclWhisperFMX.dpk`. It is a Win32 design-time package, for the
+   32-bit IDE.
+3. The demos name the library units with paths (`in '..\..\lib\...'`), so
+   they compile without any search-path setup. Opening the demo's form in
+   the designer needs `dclWhisperFMX` installed.
+4. Copy the whisper.cpp libraries next to the built executable (for example
+   `demos/WhisperDemo/Win64/Debug`), or set `LibraryPath`.
+
+Run **WhisperConsole first** on every new platform:
+
+```
+WhisperConsole --check                                   library + layout check only
+WhisperConsole ggml-base.en.bin jfk.wav                  transcribe
+WhisperConsole ggml-base.bin speech.wav auto --tokens    detect language, token data
+```
+
+## C ABI details (why the binding is safe)
+
+- **Records.** Layout is natural C layout (`{$ALIGN 8}`, 4-byte enums;
+  FPC `{$packrecords C}`). Nested anonymous structs are flattened
+  (`greedy_best_of`, `vad_params_threshold`) because the compilers disagree
+  on aligning a record inside a record. `tools/verify_layout.py` asks clang
+  for the size and every field offset on 9 targets and writes
+  `Whisper.Layout.inc`. `TWhisperLib.CheckLayout` compares that table with
+  what the Pascal compiler produced, at run time, on the actual platform.
+  It also compares the library's default params with whisper.h's documented
+  values, which catches a DLL built from a different header.
+  `TWhisper.CheckLayout` (default on) refuses a library that fails.
+- **Structs passed by value.** `whisper_full` and
+  `whisper_init_from_file_with_params` take their params struct by value.
+  clang shows the lowering:
+  - **Win64 and every ARM64 target:** a pointer to a caller-made copy. The
+    binding passes `@Copy` explicitly (`WHISPER_PARAMS_BY_POINTER`), with a
+    fresh copy per call, because the callee owns it.
+  - **Win32 and x86-64 Unix:** the copy goes on the stack. The binding
+    passes a value record and relies on the compiler, as Delphi's own
+    `WindowFromPoint(TPoint)` and macOS `CGRect` imports do.
+- **Struct returned by value.** `whisper_full_get_token_data` returns its
+  struct through a hidden result pointer (sret).
+  - **x86-64 and Win32 (MSVC):** the hidden pointer is an ordinary first
+    argument, so it is declared explicitly (`WHISPER_SRET_AS_PARAM`).
+  - **ARM64:** the pointer travels in X8, so the compiler's record return is
+    used.
+  `verify_layout.py` re-checks all of these choices on every whisper.cpp
+  update.
+- **Floating point.** ggml computes with NaN and infinity on purpose, and
+  Delphi unmasks FPU exceptions. Every computing call masks them on the
+  calling thread (`WhisperMaskFPU`).
+- **Strings.** All strings are UTF-8, including paths: whisper.cpp
+  converts them to wide characters on Windows.
+- **Callbacks.** Callbacks never let an exception escape into C. A failing
+  event handler cancels the run, and the exception is re-raised afterwards.
+
+## Not covered (yet)
+
+- **iOS:** marked unsupported. whisper.cpp ships an XCFramework, but this
+  binding loads plain shared libraries.
+- **Stand-alone VAD API** (`whisper_vad_*`): it passes small structs by
+  value, a different ABI case on every platform. VAD is available through
+  `Vad` / `VadModelFile` on a normal run.
+- **Model-loader callbacks, deprecated init functions, grammar helpers:**
+  the raw `grammar_rules` field is there.
+- **Microphone capture:** feed captured 16-bit PCM through
+  `WhisperPcm16ToMono` + `WhisperResample`.
+- **VCL and LCL components:** `TCustomWhisper` is framework-free; a
+  `Whisper.VCL` / `Whisper.LCL` unit only needs to publish the properties
+  and override `ShowHandlerException`, as in TSteamAPI.
+
+## Checks before delivery
+
+```
+python3 tools/pasdoc_check.py                       PasDoc on everything, ASCII only
+python3 tools/verify_layout.py <whisper.cpp> --write  after updating whisper.cpp
+```

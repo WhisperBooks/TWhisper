@@ -1,0 +1,20 @@
+package Whisper;
+
+{ whisper.cpp binding - runtime, framework-free (rtl only). }
+
+{$DESCRIPTION 'whisper.cpp binding - runtime'}
+{$RUNONLY}
+{$IMPLICITBUILD ON}
+
+requires
+  rtl;
+
+contains
+  Whisper.Types in '..\lib\Whisper.Types.pas',
+  Whisper.DynLib in '..\lib\Whisper.DynLib.pas',
+  Whisper.API in '..\lib\Whisper.API.pas',
+  Whisper.Audio in '..\lib\Whisper.Audio.pas',
+  Whisper.Core in '..\lib\Whisper.Core.pas',
+  Whisper.Components in '..\lib\Whisper.Components.pas';
+
+end.
