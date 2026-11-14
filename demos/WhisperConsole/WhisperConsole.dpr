@@ -116,7 +116,7 @@ const
   { The delivery this console comes from (zip number): printed first, so a
     log shows which build made it. Bumped with every zip that changes the
     library or the console. }
-  CONSOLE_DELIVERY = 10;
+  CONSOLE_DELIVERY = 12;
   { Learned habits listed by --align. }
   ALIGN_LEARNED_SHOWN = 20;
   { Marks an interpolated book word in the --align-labels file. }
@@ -138,9 +138,9 @@ begin
   Book := WhisperSplitText(WhisperLoadTextFile(ABookFile));
   Aligned := WhisperAlignText(Book, R.Words, Stats);
   WriteLn(Format('Aligned with %s: %d book words - %d exact, %d similar, %d interpolated, %d not spoken, ' +
-    '%d not heard (reading speed %.2f words/s, %d anchors, %d pass(es), %d stray match(es) dropped)',
+    '%d not heard, %d moved (reading speed %.2f words/s, %d anchors, %d pass(es), %d stray match(es) dropped)',
     [ABookFile, Stats.BookWords, Stats.Exact, Stats.Similar, Stats.Interpolated, Stats.NotSpoken,
-     Stats.NotHeard, Stats.WordsPerSecond, Stats.Anchors, Stats.Passes, Stats.Isolated]));
+     Stats.NotHeard, Stats.Moved, Stats.WordsPerSecond, Stats.Anchors, Stats.Passes, Stats.Isolated]));
   if Length(Stats.Learned) > 0 then
   begin
     Quote := '';

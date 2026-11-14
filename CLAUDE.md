@@ -127,7 +127,7 @@ speed never picks the model on its own (accuracy).
   even after a push. A corrected zip gets the NEXT number, never the old
   name; say which number it replaces. Every delivery says what it goes on
   top of: a zip number, or a commit when nothing is pending. Last number
-  used: 10. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
+  used: 12. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
   number in every zip that changes lib/ or the console (its first log
   line says which build made a log - owner was losing track, 20:26).
 - When the owner says a push is done: clone or fetch into a SEPARATE scratch
@@ -172,21 +172,13 @@ standard test because its EPUB text is known.
   real speech: lib/Whisper.Words (new unit), WordTimestamps on the
   component, IncludeWords on TWhisperRun, console --words / --labels /
   --json / --no-dtw, demo "Word timings" + save as Audacity labels / JSON.
-- Last push: ec18b4a ("Align2", 2026-11-14 ~15:55; checked: the 6
-  delivered files identical; the owner reordered WhisperAPI.groupproj to
-  BUILD ORDER - see Layout rules). NOT YET PUSHED: TWhisper-01-order.zip
-  on ec18b4a (gen_projects.py writes that order, project_check.py checks
-  it, docs) and TWhisper-02-prompt.zip on 01 (carried prompt with no
-  context, Audacity 4 menu wording); TWhisper-03-wav.zip on 02 (WAV
-  over 4 GB, notes); TWhisper-04-ffmpeg.zip on 03 (FFmpeg input, chapters,
-  survey notes of test books 2 and 3); TWhisper-05-gaps.zip on 04 (not
-  heard, second pass, Magician results); TWhisper-06-rounds.zip on 05
-  (segments span DTW words, FillGaps rounds); TWhisper-07-clean.zip on 06
-  (loops, prompt echoes, stretched words; hyphen / number words; log
-  order); TWhisper-08-habits.zip on 07 (learned habits);
-  TWhisper-09-files.zip on 08 (many files, natural order);
-  TWhisper-10-retry.zip on 09 (retry empty gaps without the prompt,
-  delivery number in the console).
+- Last push: 3a92354 ("v8-10", 2026-11-14 ~20:30; checked: all 17 files
+  of zips 01-10 identical apart from line endings; new files tracked:
+  Whisper.FFmpeg.pas, Whisper.FFmpegLayout.inc, Whisper.AudioSet.pas,
+  tools/ffmpeg_layout.py). NOT YET PUSHED: TWhisper-11-drm.zip on
+  3a92354 (DRM check, .aax in folders, Moment v10 notes);
+  TWhisper-12-moved.zip on 11 (relocation pass, notes on Silverthorn /
+  Hobbit / Night Watch / GPU memory).
 - redistributable_bin/ and *.dll are git-ignored ON PURPOSE (local copy of
   whisper-dev's dlls/; CUDA DLLs exceed GitHub's 100 MB limit). Ship
   binaries as a GitHub Release when needed.
@@ -425,6 +417,111 @@ Commands in READMEs: PowerShell needs the .\ prefix (.\WhisperConsole ...).
    gave nothing usable once WITHOUT the prompt at temperature 0.2
    (TWhisperGap.Retried; console says "tried again without the prompt");
    console prints "WhisperConsole, TWhisper delivery N" first.
+   DRM CHECK (zip 11, 20:58; owner: Audible books can be kept encrypted
+   or decrypted by a tool and keep the .aax name either way): Whisper.FFmpeg
+   WhisperMp4Protection reads the top-level boxes to moov (64-bit sizes,
+   moov at either end, at most 64 MB read) and looks for box types adrm
+   (Audible), drms (FairPlay), sinf / enca (encrypted) with a plausible
+   box size in front; TWhisperAudioFile.Create refuses such a file
+   ("copy protected ... a DRM-free copy of the book is needed"). No
+   decryption is offered, ever. Tested: test.m4b and a copy named .aax ->
+   none; a copy with a box renamed adrm -> "Audible DRM (adrm)"; a WAV ->
+   none. .aax added to the folder extensions. MOMENT v10: both bad
+   stretches recovered by the retry without the prompt (68 and 89 real
+   words); exact 83558 (95.5%), not heard 52 (53 words at 1:10:05 where
+   "she" was stretched 24 s - the retry got only the stretch's end).
+   SILVERTHORN BLIND TEST (owner, 21:10; v10, generic prompt, the owner
+   told nothing; decrypted .aax): 16 h 52 m, 24 parts, 11.5 min, 132336
+   words, 19 fallbacks, no loops / echoes, second pass 41 gaps re-run,
+   553 words (1 retry). Calibre EPUB (131278 words): 128349 exact
+   (97.8%), 1516 similar, 1061 interpolated, 94 not spoken (28 = start
+   of the "Our Story So Far" recap; the rest 4-13-word runs - candidate
+   reader skips / edition differences), 0 not heard; 150 habits learned
+   with no prompt help (arutha=aruta 713, arruta 149; calin heard 5 ways;
+   US/UK spellings), 2.3 s.
+   HOBBIT (owner, 21:42; v11, decrypted .aax, generic prompt): 10 h 25 m,
+   21 chapters, 7.5 min, 95820 words, 0 gaps >= 5 s left (29 re-run, 5
+   retries). EPUB = a DIFFERENT EDITION: HarperCollins illustrated, EPUB 3
+   (iBooks prefix), 48 spine items, 77 images, captions
+   p.image_caption, verse p.vext / vext1 / vext3, chapter heads h1.cn +
+   h1.ct; 105764 words. Aligned: 94229 exact, 679 similar, 664
+   interpolated, 10155 not spoken, 5 not heard, 8.2 s, 29 habits (dwarf
+   names: bombur=bomba 38, kili=killy 32, dori=dory 27, dain=dane 25,
+   oin=owen 17...). Not spoken = front matter 8604 (accessibility note,
+   introductions), back 1419 (other books, credits), and the IMAGE
+   CAPTIONS one by one (10 of them, 4-13 words: "The Misty Mountains
+   looking West ...") - correctly not spoken; two candidate reader /
+   abridgement differences: the "(Look at the map at the beginning of
+   this book ...)" aside (17 words) and a 15-word Troll line. Story
+   body ~95.5k words: ~98.7% exact. EPUB layer: captions (and other
+   figure text) must stay outside the sync (no span, no SMIL entry) -
+   the aligner already marks them not spoken.
+   GPU MEMORY PLAN (owner 21:55-22:01; build AFTER the EPUB layer):
+   free VRAM is known (ggml device memory, already in the device list);
+   the risk is OTHER programs taking it during a run and a failed
+   allocation inside compute aborting the process (CUDA's pool grows
+   during compute). Layers: (1) save each finished part to disk + resume
+   from the first unfinished one; (2) measured need per model (benchmark
+   records free before / after load) + a pre-load check with ~1 GB
+   margin; ladder: other GPU -> same GPU with system-RAM fallback ->
+   smaller model -> CPU; (3) GUI: transcription in a WORKER PROCESS
+   (crash-proof, and the only way to change the switches below - they
+   are read once per process), free memory shown during the run.
+   UNIFIED / SYSTEM MEMORY SWITCHES (checked in whisper.cpp 1.9.5 /
+   ggml source): GGML_CUDA_ENABLE_UNIFIED_MEMORY (ggml-cuda.cu
+   ggml_cuda_device_malloc -> cudaMallocManaged; static const, read once);
+   GGML_VK_ALLOW_SYSMEM_FALLBACK, GGML_VK_PREFER_HOST_MEMORY,
+   GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM (ggml-vulkan.cpp device init).
+   HIP shares the CUDA code: the same CUDA switch -> hipMallocManaged;
+   on WINDOWS hipMallocManaged is unsupported and the code warns and
+   falls back to hipMalloc (switch does nothing) - use Vulkan there;
+   on Linux it works (oversubscription depends on GPU / XNACK / HMM;
+   test on the Steam Machine); Linux APUs (UMA) read free memory from
+   /proc/meminfo. CUDA managed memory oversubscribes on Linux only; on
+   Windows NVIDIA drivers (536+) have their own "CUDA Sysmem Fallback
+   Policy" (Control Panel, default on) - from memory, not verified.
+   SETTING THEM: in our own process BEFORE TWhisperLib.Load loads the
+   backends: Windows SetEnvironmentVariableW AND ucrtbase.dll's
+   _wputenv_s (the UCRT keeps its own copy, built at its first getenv;
+   _wputenv_s updates both), bound by name; POSIX libc setenv. Plan: a
+   load option (e.g. GpuMemoryFallback) that sets the right variables
+   per backend and platform. Spilled memory is reached over PCIe: many
+   times slower for that work, but no crash.
+   NIGHT WATCH - FOOTNOTES (owner, 22:02; v11): 14 h 41 m, 75 parts, 10
+   min, 113701 words. Calibre EPUB from MOBI (filepos anchors); the 10
+   footnotes are each a <p> with <sup class="calibre7">*</sup> in its own
+   split file (split_013-022) AFTER the copyright page; references are
+   '*' + links in the text; no epub:type. Aligned: 108369 exact, 1900
+   similar, 2062 interpolated, 1211 not spoken, 10 not heard, 48 habits
+   (carcer=carsa 45, keel=kiel 45, dickins=dickens 39), 3.3 s; story
+   ~96.5% exact. The NARRATOR READS EACH FOOTNOTE IN PLACE (at its
+   reference: note 1 at 0:27:35, 63 unpaired transcript words there,
+   53 of 61 4-grams found; all 10 found): in book order they are at the
+   end -> "not spoken", and their spoken words sit unpaired in the
+   transcript. Main text unaffected. PLAN (content-unaware, no footnote
+   detection needed): a RELOCATION PASS after the main alignment - each
+   not-spoken book run is searched (n-grams) among the transcript's
+   unpaired stretches; a strong match takes those times (a new match
+   kind, e.g. moved). Catches footnotes read in place, moved paragraphs,
+   reordered editions. The EPUB layer then gives note text its own spans
+   and SMIL entries at the spoken time.
+   RELOCATION PASS DONE (zip 12, 22:15): Whisper.Align Relocate after the
+   learned-habit passes: transcript words used = paired (plus the
+   transcript words inside a paired word's time); unpaired stretches of
+   >= RELOCATE_MIN_STRETCH (4) words, their 3-token grams indexed; each
+   not-spoken run (>= 4 words; punctuation-only words inside it count)
+   is a work list of token ranges: best stretch by hits, the hits bound
+   the book and transcript ranges, accepted with >= 3 hits and >= 0.4 of
+   the book grams between first and last hit, aligned with AlignGap;
+   paired words -> wamMoved (WordIndex / times where spoken), unpaired
+   words between moved ones placed between them; what is left either
+   side goes back on the work list (one run held all ten notes). Stats
+   .Moved; regions; console prints moved. Night Watch: all 10 footnotes
+   moved to where they are read (0:27:35 ... 12:21:31), 441 words, not
+   spoken 1211 -> 770. Other books: Magician / Hobbit / Silverthorn /
+   Aladdin 0 moved; Moment 6 ("copyright (c) 1984 by Thranx, Inc." found
+   in the end credits - right). EPUB layer: moved words keep their book
+   place for the text, their spoken time for SMIL.
    LATER (owner, 18:19): turn the FFmpeg code into its own reusable
    components - TFFmpegAPI - "good reusable code". To settle when it is
    taken up: (1) where it lives - inside TWhisper (own runtime package

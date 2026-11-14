@@ -90,7 +90,9 @@ type
 function WhisperListAudioFiles(const AName: string): TStringList;
 
 { True for the extensions read as audio in a folder (.wav, .flac, .ogg,
-  .oga, .opus, .mp3, .m4a, .m4b, .aac, .wma, .aif, .aiff, .mka, .webm). }
+  .oga, .opus, .mp3, .m4a, .m4b, .aac, .wma, .aif, .aiff, .mka, .webm,
+  .aax - read when a tool has decrypted it; a protected one is refused
+  with a clear message). }
 function WhisperIsAudioFileName(const AFileName: string): Boolean;
 
 { Compares two file names as people read them, without case: runs of
@@ -109,8 +111,8 @@ implementation
 
 const
   { Extensions read as audio in a folder. }
-  AUDIO_EXTENSIONS: array[0..13] of string = ('.wav', '.flac', '.ogg', '.oga', '.opus', '.mp3', '.m4a',
-    '.m4b', '.aac', '.wma', '.aif', '.aiff', '.mka', '.webm');
+  AUDIO_EXTENSIONS: array[0..14] of string = ('.wav', '.flac', '.ogg', '.oga', '.opus', '.mp3', '.m4a',
+    '.m4b', '.aac', '.wma', '.aif', '.aiff', '.mka', '.webm', '.aax');
 
 function WhisperIsAudioFileName(const AFileName: string): Boolean;
 var

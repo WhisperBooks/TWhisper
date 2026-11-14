@@ -139,7 +139,11 @@ begin
 end;
 ```
 
-DRM-protected files (Audible's AAX) are not read.
+Copy-protected files are not read: `WhisperMp4Protection` looks at an
+MPEG-4 file's header (Audible's `adrm`, FairPlay's `drms`, `sinf` /
+`enca`) and `TWhisperAudioFile` refuses such a file with a clear message
+instead of decoding noise. The extension does not matter: an `.aax` that a
+tool has already decrypted reads like any M4B.
 
 **A recording in many files** - one file per chapter, several files per
 chapter, WAV / FLAC / OGG / MP3 mixed - is a `TWhisperAudioSet`
@@ -283,6 +287,13 @@ all differ, and text and recording may come from different editions.
   "armour" are all learned from the book and the recording alone. For a
   proof-listener this is the line between the recogniser's habit (all
   through the book) and a reader's slip (once). `Stats.Learned` lists them.
+- **Moved text.** A run not spoken in book order is looked for among the
+  transcript words nothing paired with (three-word sequences, close
+  together); found, it is **moved** (`wamMoved`) and timed where it was
+  spoken. Nothing marks footnotes in most EPUBs, and none is needed: in a
+  Discworld novel whose ten footnotes sit after the copyright page, the
+  narrator reads each where it is referenced, and all ten were found and
+  timed there (441 words).
 - **Coincidences.** A small cluster of matches with unspoken text on both
   sides is taken out and the alignment is run again. Gutenberg's header
   repeats the title, so this finds the title where it is really read.

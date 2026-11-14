@@ -1,0 +1,3 @@
+[submodule "FFmpegAPI"]
+	path = FFmpegAPI
+	url = https://github.com/G3DGames/TFFMpegAPI.git

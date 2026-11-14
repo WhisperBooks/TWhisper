@@ -44,6 +44,11 @@
       heard" (@code(wamNotHeard)): the recogniser may have dropped them,
       so they are neither interpolated as heard nor blamed on the
       reader.)
+    @item(Text not spoken in book order is looked for among the transcript's
+      words that nothing paired with: a footnote the reader reads where it
+      is referenced (the EPUB has it at the end), a paragraph another
+      edition has elsewhere. Found close together, it is "moved"
+      (@code(wamMoved)) and timed where it was spoken.)
     @item(A small cluster of matches cut off on both sides by text that was
       not spoken - Project Gutenberg's header repeating the title the reader
       speaks - is a coincidence: it is taken out and the alignment run
@@ -96,7 +101,12 @@ type
       dropped the rest of a 30 s window. Placed in that time, like
       interpolated words; @code(TWhisperRun.FillGaps) transcribes such
       gaps again. }
-    wamNotHeard
+    wamNotHeard,
+    { Moved: in book order the text was not spoken, but it was found
+      spoken somewhere else - a footnote read where it is referenced, a
+      paragraph another edition has elsewhere. Timed where it was spoken
+      (@code(WordIndex) points there). }
+    wamMoved
   );
 
   { The time of one book word. }
@@ -132,6 +142,8 @@ type
     NotSpoken: Integer;
     { Book words in a gap of the transcript (wamNotHeard). }
     NotHeard: Integer;
+    { Book words found spoken out of book order (wamMoved). }
+    Moved: Integer;
     { Book words without a time for being punctuation only. }
     Punctuation: Integer;
     { Reading speed of the timed words, words per second. }
@@ -160,7 +172,7 @@ type
     First: Integer;
     { Last book word. }
     Last: Integer;
-    { wamInterpolated, wamNotSpoken or wamNotHeard. }
+    { wamInterpolated, wamNotSpoken, wamNotHeard or wamMoved. }
     Match: TWhisperAlignMatch;
     { Time where the stretch is, 10 ms units: its start for interpolated
       words and words not heard, the end of the timed word before it for
@@ -193,12 +205,12 @@ function WhisperSplitText(const AText: string): TWhisperStringArray;
 function WhisperAlignText(const ABookWords: TWhisperStringArray; const AWords: TWhisperWordArray;
   out AStats: TWhisperAlignStats): TWhisperAlignedWordArray;
 
-{ The stretches of interpolated, not-spoken and not-heard words, at least
-  AMinWords long (punctuation-only words inside a stretch count with it). }
+{ The stretches of interpolated, not-spoken, not-heard and moved words, at
+  least AMinWords long (punctuation-only words inside a stretch count with it). }
 function WhisperAlignRegions(const AAligned: TWhisperAlignedWordArray; AMinWords: Integer): TWhisperAlignRegionArray;
 
 { Name of a match kind ('none', 'exact', 'similar', 'interpolated',
-  'not spoken', 'not heard'). }
+  'not spoken', 'not heard', 'moved'). }
 function WhisperAlignMatchName(AMatch: TWhisperAlignMatch): string;
 
 implementation
@@ -261,7 +273,17 @@ const
   EDGE_SLACK = 20;
   { Names of the match kinds. }
   MATCH_NAMES: array[TWhisperAlignMatch] of string = ('none', 'exact', 'similar', 'interpolated',
-    'not spoken', 'not heard');
+    'not spoken', 'not heard', 'moved');
+  { Relocation: shortest run of book words not spoken that is looked for
+    elsewhere, ... }
+  RELOCATE_MIN_WORDS = 4;
+  { ... words in a row of the transcript's unpaired stretch it may match, ... }
+  RELOCATE_MIN_STRETCH = 4;
+  { ... least three-token sequences in common, ... }
+  RELOCATE_MIN_HITS = 3;
+  { ... and least share of the book run's sequences between the first and
+    the last hit that must be found. }
+  RELOCATE_MIN_DENSITY = 0.4;
   { Number words 0..19. }
   SMALL_NUMBERS: array[0..19] of string = ('zero', 'one', 'two', 'three', 'four', 'five', 'six',
     'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
@@ -1437,6 +1459,257 @@ begin
   end;
 end;
 
+{ The relocation pass: each run of book words not spoken (RELOCATE_MIN_WORDS
+  or more) is looked for among the stretches of transcript words no book
+  word paired with; where enough of its three-token sequences are found
+  close together, the run (between its first and last hit) is aligned with
+  that stretch and becomes wamMoved, timed where it was spoken. }
+procedure Relocate(const ABookWords: TWhisperStringArray; const AWords: TWhisperWordArray;
+  const ATrans: TTokens; var AResult: TWhisperAlignedWordArray);
+var
+  BT: TTokens;
+  Used: TBoolArray;
+  Grams: TStringList;
+  Pairs: TPairArray;
+  First: array of Integer;
+  I, J, K, R0, R1, S, Hits, BMin, BMax, TMin, TMax, NP, TokB0, TokB1, W, TW, Left, Right: Integer;
+  Key: string;
+  Acc, Span, Total: Double;
+  StretchOf: array of Integer;
+  BestStretch, BestHits, St, NWork: Integer;
+  HitsOf: array of Integer;
+  Work: array of Integer;   // pairs: first, last book token
+begin
+  // book tokens of every word, and the first token of each word
+  BT.Norm := nil;
+  BT.Word := nil;
+  BT.Count := 0;
+  BT.SilenceAfter := nil;
+  for I := 0 to High(ABookWords) do
+    AddTokens(ABookWords[I], I, BT);
+  First := nil;
+  SetLength(First, Length(ABookWords) + 1);
+  for I := 0 to High(First) do
+    First[I] := BT.Count;
+  for I := BT.Count - 1 downto 0 do
+    First[BT.Word[I]] := I;
+  for I := High(ABookWords) - 1 downto 0 do
+    if First[I] > First[I + 1] then
+      First[I] := First[I + 1];
+  // transcript words used by the alignment
+  Used := nil;
+  SetLength(Used, Length(AWords));
+  for I := 0 to High(AResult) do
+    if AResult[I].WordIndex >= 0 then
+      for J := AResult[I].WordIndex to High(AWords) do
+      begin
+        if (J > AResult[I].WordIndex) and (AWords[J].T0 >= AResult[I].T1) then
+          Break;
+        Used[J] := True;
+      end;
+  // unpaired stretches of transcript tokens: number each, index their grams
+  StretchOf := nil;
+  SetLength(StretchOf, ATrans.Count);
+  S := 0;
+  I := 0;
+  while I < ATrans.Count do
+  begin
+    StretchOf[I] := -1;
+    if Used[ATrans.Word[I]] then
+    begin
+      Inc(I);
+      Continue;
+    end;
+    J := I;
+    while (J < ATrans.Count) and not Used[ATrans.Word[J]] do
+      Inc(J);
+    if ATrans.Word[J - 1] - ATrans.Word[I] + 1 >= RELOCATE_MIN_STRETCH then
+    begin
+      for K := I to J - 1 do
+        StretchOf[K] := S;
+      Inc(S);
+    end
+    else
+      for K := I to J - 1 do
+        StretchOf[K] := -1;
+    I := J;
+  end;
+  if S = 0 then
+    Exit;
+  Grams := TStringList.Create;
+  try
+    Grams.Sorted := True;
+    Grams.Duplicates := dupAccept;
+    for I := 0 to ATrans.Count - ANCHOR_N do
+      if (StretchOf[I] >= 0) and (StretchOf[I + ANCHOR_N - 1] = StretchOf[I]) then
+        Grams.AddObject(string(ATrans.Norm[I] + ' ' + ATrans.Norm[I + 1] + ' ' + ATrans.Norm[I + 2]),
+          TObject(NativeInt(I)));
+    HitsOf := nil;
+    SetLength(HitsOf, S);
+    // runs of book words not spoken
+    I := 0;
+    while I <= High(AResult) do
+    begin
+      if AResult[I].Match <> wamNotSpoken then
+      begin
+        Inc(I);
+        Continue;
+      end;
+      R0 := I;
+      while (I <= High(AResult)) and (AResult[I].Match in [wamNotSpoken, wamNone]) do
+        Inc(I);
+      R1 := I - 1;
+      if R1 - R0 + 1 < RELOCATE_MIN_WORDS then
+        Continue;
+      // token ranges still to place: the run, then what is left of it on
+      // either side of each part found (a run can hold several notes)
+      NWork := 1;
+      SetLength(Work, 2);
+      Work[0] := First[R0];
+      Work[1] := First[R1 + 1] - 1;
+      while NWork > 0 do
+      begin
+      Dec(NWork);
+      TokB0 := Work[2 * NWork];
+      TokB1 := Work[2 * NWork + 1];
+      if TokB1 - TokB0 + 1 < RELOCATE_MIN_WORDS then
+        Continue;
+      // the stretch with the most hits
+      for K := 0 to S - 1 do
+        HitsOf[K] := 0;
+      for J := TokB0 to TokB1 - ANCHOR_N + 1 do
+      begin
+        Key := string(BT.Norm[J] + ' ' + BT.Norm[J + 1] + ' ' + BT.Norm[J + 2]);
+        K := Grams.IndexOf(Key);
+        if K < 0 then
+          Continue;
+        while (K > 0) and (Grams[K - 1] = Key) do
+          Dec(K);
+        while (K < Grams.Count) and (Grams[K] = Key) do
+        begin
+          St := StretchOf[Integer(NativeInt(Grams.Objects[K]))];
+          if St >= 0 then
+            Inc(HitsOf[St]);
+          Inc(K);
+        end;
+      end;
+      BestStretch := -1;
+      BestHits := 0;
+      for K := 0 to S - 1 do
+        if HitsOf[K] > BestHits then
+        begin
+          BestHits := HitsOf[K];
+          BestStretch := K;
+        end;
+      if BestHits < RELOCATE_MIN_HITS then
+        Continue;
+      // the hits in that stretch bound the parts to align
+      BMin := MaxInt;
+      BMax := -1;
+      TMin := MaxInt;
+      TMax := -1;
+      Hits := 0;
+      for J := TokB0 to TokB1 - ANCHOR_N + 1 do
+      begin
+        Key := string(BT.Norm[J] + ' ' + BT.Norm[J + 1] + ' ' + BT.Norm[J + 2]);
+        K := Grams.IndexOf(Key);
+        if K < 0 then
+          Continue;
+        while (K > 0) and (Grams[K - 1] = Key) do
+          Dec(K);
+        while (K < Grams.Count) and (Grams[K] = Key) do
+        begin
+          TW := Integer(NativeInt(Grams.Objects[K]));
+          if StretchOf[TW] = BestStretch then
+          begin
+            Inc(Hits);
+            if J < BMin then
+              BMin := J;
+            if J > BMax then
+              BMax := J;
+            if TW < TMin then
+              TMin := TW;
+            if TW > TMax then
+              TMax := TW;
+            Break;
+          end;
+          Inc(K);
+        end;
+      end;
+      if (Hits < RELOCATE_MIN_HITS) or (Hits < RELOCATE_MIN_DENSITY * (BMax - BMin + 1)) then
+        Continue;
+      Pairs := nil;
+      NP := 0;
+      AlignGap(BT, ATrans, BMin, BMax + ANCHOR_N - 1, TMin, TMax + ANCHOR_N - 1, False, Pairs, NP);
+      // the book words paired take the times where they were spoken
+      for J := 0 to NP - 1 do
+      begin
+        W := BT.Word[Pairs[J].B];
+        TW := ATrans.Word[Pairs[J].T];
+        if AResult[W].Match <> wamMoved then
+        begin
+          AResult[W].Match := wamMoved;
+          AResult[W].WordIndex := TW;
+          AResult[W].T0 := AWords[TW].T0;
+          AResult[W].T1 := AWords[TW].T1;
+        end
+        else
+        begin
+          if AWords[TW].T0 < AResult[W].T0 then
+            AResult[W].T0 := AWords[TW].T0;
+          if AWords[TW].T1 > AResult[W].T1 then
+            AResult[W].T1 := AWords[TW].T1;
+        end;
+        Used[TW] := True;
+      end;
+      for J := TMin to TMax + ANCHOR_N - 1 do
+        if (J < ATrans.Count) and (StretchOf[J] = BestStretch) then
+          StretchOf[J] := -1;   // that part of the stretch is taken
+      // the rest of the run on either side, to be placed in turn
+      if Length(Work) < 2 * (NWork + 2) then
+        SetLength(Work, 2 * (NWork + 2));
+      Work[2 * NWork] := TokB0;
+      Work[2 * NWork + 1] := BMin - 1;
+      Inc(NWork);
+      Work[2 * NWork] := BMax + ANCHOR_N;
+      Work[2 * NWork + 1] := TokB1;
+      Inc(NWork);
+      // words of the run between moved ones: placed between them
+      W := BT.Word[BMin];
+      J := BT.Word[BMax + ANCHOR_N - 1];
+      Left := -1;
+      for K := W to J do
+        if AResult[K].Match = wamMoved then
+        begin
+          if (Left >= 0) and (K - Left > 1) then
+          begin
+            Total := 0;
+            for Right := Left + 1 to K - 1 do
+              Total := Total + WordWeight(ABookWords[Right]);
+            Acc := AResult[Left].T1;
+            Span := AResult[K].T0 - AResult[Left].T1;
+            if Span < 0 then
+              Span := 0;
+            for Right := Left + 1 to K - 1 do
+              if AResult[Right].Match = wamNotSpoken then
+              begin
+                AResult[Right].T0 := Round(Acc);
+                Acc := Acc + Span * WordWeight(ABookWords[Right]) / Total;
+                AResult[Right].T1 := Round(Acc);
+                AResult[Right].Match := wamMoved;
+              end
+              else
+                Acc := Acc + Span * WordWeight(ABookWords[Right]) / Total;
+          end;
+          Left := K;
+        end;
+      end;
+    end;
+  finally
+    Grams.Free;
+  end;
+end;
+
 function WhisperAlignText(const ABookWords: TWhisperStringArray; const AWords: TWhisperWordArray;
   out AStats: TWhisperAlignStats): TWhisperAlignedWordArray;
 var
@@ -1506,6 +1779,7 @@ begin
     Map.Free;
     Counts.Free;
   end;
+  Relocate(ABookWords, AWords, Trans, Result);
 
   Run := 0;
   RunStart := 0;
@@ -1517,6 +1791,7 @@ begin
       wamInterpolated: Inc(AStats.Interpolated);
       wamNotSpoken: Inc(AStats.NotSpoken);
       wamNotHeard: Inc(AStats.NotHeard);
+      wamMoved: Inc(AStats.Moved);
     else
       Inc(AStats.Punctuation);
     end;
@@ -1547,7 +1822,7 @@ begin
   while I <= High(AAligned) do
   begin
     M := AAligned[I].Match;
-    if (M <> wamInterpolated) and (M <> wamNotSpoken) and (M <> wamNotHeard) then
+    if not (M in [wamInterpolated, wamNotSpoken, wamNotHeard, wamMoved]) then
     begin
       Inc(I);
       Continue;

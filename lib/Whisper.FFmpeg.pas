@@ -287,6 +287,13 @@ type
   Whisper.FFmpegLayout.inc; '' when they agree, else what differs. }
 function WhisperFFmpegCheckLayout: string;
 
+{ The copy protection of an MPEG-4 file (.m4b, .m4a, .mp4, .aax, ...), read
+  from its header (the moov box), without FFmpeg: 'Audible DRM (adrm)',
+  'FairPlay DRM (drms)' or 'encrypted (sinf / enca)'; '' when there is
+  none, or the file is not MPEG-4. A file a tool has decrypted has none,
+  whatever its extension. }
+function WhisperMp4Protection(const AFileName: string): string;
+
 implementation
 
 const
@@ -419,6 +426,87 @@ begin
   if Result <> '' then
     Result := 'FFmpeg record layout differs from C:' + Result;
   {$endif}
+end;
+
+function WhisperMp4Protection(const AFileName: string): string;
+const
+  { Largest moov box read (it holds the index of the whole file). }
+  MAX_MOOV = 64 * 1024 * 1024;
+  { Box types that mean protection, and what they are. }
+  MARKS: array[0..3] of AnsiString = ('adrm', 'drms', 'sinf', 'enca');
+  NAMES: array[0..3] of string = ('Audible DRM (adrm)', 'FairPlay DRM (drms)', 'encrypted (sinf)',
+    'encrypted (enca)');
+var
+  F: TFileStream;
+  Head: array[0..7] of Byte;
+  Big: array[0..7] of Byte;
+  Size, Pos, Len: Int64;
+  Kind: AnsiString;
+  Moov: array of Byte;
+  I, K, M: Integer;
+  BoxSize: Int64;
+
+  function BE32(const A: array of Byte; AAt: Integer): Int64;
+  begin
+    Result := (Int64(A[AAt]) shl 24) or (A[AAt + 1] shl 16) or (A[AAt + 2] shl 8) or A[AAt + 3];
+  end;
+
+begin
+  Result := '';
+  if not FileExists(AFileName) then
+    Exit;
+  F := TFileStream.Create(AFileName, fmOpenRead or fmShareDenyWrite);
+  try
+    Len := F.Size;
+    Pos := 0;
+    Moov := nil;
+    while Pos + 8 <= Len do
+    begin
+      F.Position := Pos;
+      F.ReadBuffer(Head, 8);
+      Size := BE32(Head, 0);
+      SetLength(Kind, 4);
+      Move(Head[4], Kind[1], 4);
+      if (Pos = 0) and (Kind <> 'ftyp') then
+        Exit;   // not MPEG-4
+      if Size = 1 then
+      begin
+        F.ReadBuffer(Big, 8);
+        Size := (BE32(Big, 0) shl 32) or BE32(Big, 4);
+      end
+      else if Size = 0 then
+        Size := Len - Pos;
+      if Size < 8 then
+        Exit;
+      if Kind = 'moov' then
+      begin
+        if Size > MAX_MOOV then
+          Size := MAX_MOOV;
+        if Pos + Size > Len then
+          Size := Len - Pos;
+        SetLength(Moov, Size);
+        F.Position := Pos;
+        F.ReadBuffer(Moov[0], Size);
+        Break;
+      end;
+      Pos := Pos + Size;
+    end;
+  finally
+    F.Free;
+  end;
+  // a mark counts where it is a box type: a plausible size in front of it
+  for I := 4 to Length(Moov) - 4 do
+    for K := Low(MARKS) to High(MARKS) do
+    begin
+      M := 1;
+      while (M <= 4) and (Moov[I + M - 1] = Ord(MARKS[K][M])) do
+        Inc(M);
+      if M <= 4 then
+        Continue;
+      BoxSize := BE32(Moov, I - 4);
+      if (BoxSize >= 8) and (I - 4 + BoxSize <= Length(Moov)) then
+        Exit(NAMES[K]);
+    end;
 end;
 
 { TWhisperFFmpeg }
@@ -556,12 +644,17 @@ var
   Name: UTF8String;
   Stream, Par, Decoder: Pointer;
   Start: Int64;
+  Protection: string;
 begin
   inherited Create;
   if AFFmpeg = nil then
     raise EWhisperError.Create('TWhisperAudioFile needs a loaded TWhisperFFmpeg');
   FFFmpeg := AFFmpeg;
   FFileName := AFileName;
+  Protection := WhisperMp4Protection(AFileName);
+  if Protection <> '' then
+    raise EWhisperError.CreateFmt('%s is copy protected (%s): its audio cannot be read. An .aax file ' +
+      'straight from Audible is protected; a DRM-free copy of the book is needed.', [AFileName, Protection]);
   Name := UTF8String(AFileName);
   Check(FFFmpeg.Flat.avformat_open_input(FFormat, PAnsiChar(Name), nil, nil), 'open');
   Check(FFFmpeg.Flat.avformat_find_stream_info(FFormat, nil), 'read the stream information of');
