@@ -262,6 +262,21 @@ Keep the EPUB layer and the engine-loading pattern general so this fits.
 Copyright: Pooh text is UK public domain from 2027-01-01 (Milne d. 1956),
 Shepard's drawings until end of 2046, Disney's designs separately.
 
+### AMD (HIP) and Intel Arc (SYCL / OpenVINO) - wait for testers
+Owner (2026-11-14): support them once someone can test. A friend has an AMD
+GPU (model unknown); same for Intel Arc. Until then Vulkan covers both.
+- HIP: use the HIP SDK 7.x (Windows 11 only; 6.4.2 was the last for Win10;
+  7.x renamed the runtime to amdhip64_7.dll / amd_comgr_3.dll - it comes
+  with the user's AMD driver, a too-old driver just means ggml-hip fails to
+  load and Vulkan remains). whisper-dev to-do: add the Ryzen AI targets
+  (gfx1150 / gfx1151 ...) to WHISPER_DEV_HIP_TARGETS, check the copied
+  library names against 7.x, README note. Z1 (gfx1103) is not on AMD's
+  Windows list.
+- Intel Arc: Vulkan now; candidates ggml-sycl (oneAPI DPC++ / icx: a
+  second tree like HIP; large oneAPI runtime DLLs) and the OpenVINO GPU
+  device (see NPU plan). The owner's Intel iGPU can do a first SYCL /
+  OpenVINO smoke test, but Arc numbers need an Arc card.
+
 ### Other open items
 WhisperConsole --check on each platform; macOS dyld reuse of preloaded
 dylibs (else build with @loader_path rpath, README); the Android library
