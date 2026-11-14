@@ -21,8 +21,8 @@ import os, re, uuid
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-LIB = ["Whisper.Types", "Whisper.DynLib", "Whisper.API", "Whisper.Audio", "Whisper.Words",
-       "Whisper.Align", "Whisper.Core", "Whisper.Components"]
+LIB = ["Whisper.Types", "Whisper.DynLib", "Whisper.API", "Whisper.Audio", "Whisper.FFmpeg",
+       "Whisper.Words", "Whisper.Align", "Whisper.Core", "Whisper.AudioSet", "Whisper.Components"]
 
 # 64-bit targets only for programs (owner 2026-11-13: no 32-bit build; ggml
 # does not link for 32-bit MSVC). The runtime packages also build for Win32,
@@ -286,23 +286,22 @@ def groupproj():
     L = ['<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">',
          '    <PropertyGroup>', f'        <ProjectGuid>{guid}</ProjectGuid>', '    </PropertyGroup>',
          '    <ItemGroup>']
-    # Shown in the Projects window (as TSteamAPI): applications first, then
-    # runtime packages, then design packages. Build order is separate: the
-    # Dependencies below (IDE) and the Build / Clean / Make targets (MSBuild)
-    # build runtime packages, then design packages, then the applications,
-    # which link the DCUs the runtime packages produce.
-    rank_show = {"app": 0, "console": 0, "runtime": 1, "design": 2}
-    rank_build = {"runtime": 0, "design": 1, "app": 2, "console": 2}
+    # OWNER'S ORDER (2026-11-14, as saved by the IDE): runtime packages
+    # (WhisperAPI, then WhisperAPIFMX), then the design package, then the
+    # applications - in the Projects window AND in the Build / Clean / Make
+    # targets. Build All then compiles a package before everything that
+    # needs it, and Delphi's quick re-compilation works; another order
+    # breaks builds. No <Dependencies> (the owner's saved file has none):
+    # the order is the dependency. tools/project_check.py checks it.
+    rank_show = {"runtime": 0, "design": 1, "app": 2, "console": 2}
+    rank_build = rank_show
     fw = lambda p: {"None": 0, "FMX": 1, "VCL": 2}.get(p["framework"], 3) \
         if p["kind"] in ("runtime", "design") else 0
     ordered = sorted(PROJECTS, key=lambda p: (rank_show[p["kind"]], fw(p)))
     build_order = sorted(PROJECTS, key=lambda p: (rank_build[p["kind"]], fw(p)))
     for p in ordered:
         rel = f"{p['dir']}\\{p['name']}.dproj"
-        deps = ";".join(f"{q['dir']}\\{q['name']}.dproj" for q in PROJECTS if q["name"] in p.get("depends", []))
-        L += [f'        <Projects Include="{rel}">',
-              f'            <Dependencies>{deps}</Dependencies>' if deps else '            <Dependencies/>',
-              '        </Projects>']
+        L += [f'        <Projects Include="{rel}">', '            <Dependencies/>', '        </Projects>']
     L += ['    </ItemGroup>', '    <ProjectExtensions>',
           '        <Borland.Personality>Default.Personality.12</Borland.Personality>',
           '        <Borland.ProjectType/>', '        <BorlandProject>',

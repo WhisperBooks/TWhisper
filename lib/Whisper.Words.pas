@@ -30,6 +30,10 @@
     @item(Text tokens are joined until they form whole UTF-8 characters.)
     @item(Languages with spaces: a piece starting with a space, or
       consisting of punctuation, starts a new word; others are appended.
+      Unlike OpenAI, a hyphen, comma or full stop with no space before it
+      continues the word before ('three-foot-long', '30,000', '3.5'):
+      OpenAI gives 'three', '-foot', '-long' and '30', ',000', which no
+      text of record pairs with.)
       Chinese, Japanese, Thai, Lao, Burmese and Cantonese: every whole
       character piece is a word.)
     @item(A word's times are those of its first and last token that is not
@@ -662,8 +666,17 @@ begin
     if not Utf8Complete(Piece) and (I < High(ATokens)) then
       Continue;   // a character continues in the next token
     if ASpaces then
+    begin
       NewWord := (Count = 0) or StartsWithSpace(Piece) or
-        IsIn(CodePoints(StripSpaces(Piece)), ASCII_PUNCTUATION)
+        IsIn(CodePoints(StripSpaces(Piece)), ASCII_PUNCTUATION);
+      // a hyphen, comma or full stop inside a word continues it
+      if NewWord and (Count > 0) and not StartsWithSpace(Piece) and
+        ((Piece = '-') or (Piece = ',') or (Piece = '.')) and
+        not EndsWithSpace(Result[Count - 1].Bytes) and (I < High(ATokens)) and
+        not StartsWithSpace(ATokens[I + 1].Bytes) and
+        not IsPunctuationToken(ATokens[I + 1].Bytes) then
+        NewWord := False;
+    end
     else
       NewWord := True;
     if NewWord then

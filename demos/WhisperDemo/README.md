@@ -43,7 +43,7 @@ audio.
 4. Word timings: tick "Word timings" BEFORE Load model (DTW is set up when
    the model loads; the log says which alignment heads). After the run,
    Save as... "Words: Audacity labels" and import that file in Audacity
-   (File > Import > Labels) over the audio to check the timings by ear.
+   (Audacity 3: File > Import > Labels; Audacity 4: File > Import) over the audio to check the timings by ear.
 
 Settings (model folder, model, audio, device, language, word timings) are kept per user in
 `%APPDATA%\G3DGames\WhisperDemo\WhisperDemo.ini`.

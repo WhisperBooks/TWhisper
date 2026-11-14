@@ -39,6 +39,11 @@
       far faster than the reader does: such a run was NOT SPOKEN (a missing
       paragraph, front matter between a stray match and the text). Text
       before the first or after the last timed word is not spoken either.)
+    @item(Where the transcript is silent for @link(WHISPER_ALIGN_SILENCE) or
+      more, the book words it lacks go into that silence and are "not
+      heard" (@code(wamNotHeard)): the recogniser may have dropped them,
+      so they are neither interpolated as heard nor blamed on the
+      reader.)
     @item(A small cluster of matches cut off on both sides by text that was
       not spoken - Project Gutenberg's header repeating the title the reader
       speaks - is a coincidence: it is taken out and the alignment run
@@ -55,8 +60,16 @@ unit Whisper.Align;
 interface
 
 uses
-  SysUtils,
+  SysUtils, Classes,
   Whisper.Types;
+
+const
+  { A pause of the transcript this long (10 ms units: 3 s) or longer is a
+    silence: book words that the transcript lacks go there at almost no
+    cost, and are wamNotHeard rather than not spoken. Real pauses of a
+    reader are shorter; this is where the recogniser dropped speech, or
+    music, or a long silence. }
+  WHISPER_ALIGN_SILENCE = 3 * WHISPER_TICKS_PER_SECOND;
 
 type
   { Words of a text, in reading order. }
@@ -76,7 +89,14 @@ type
     wamInterpolated,
     { Not spoken: before the first or after the last timed word, or a run
       that could not have been read in the time between its neighbours. }
-    wamNotSpoken
+    wamNotSpoken,
+    { Not heard: the transcript has no words at all for a while
+      (@code(WHISPER_ALIGN_SILENCE) or more) where these words belong, so
+      whether they were spoken is unknown - most often the recogniser
+      dropped the rest of a 30 s window. Placed in that time, like
+      interpolated words; @code(TWhisperRun.FillGaps) transcribes such
+      gaps again. }
+    wamNotHeard
   );
 
   { The time of one book word. }
@@ -110,6 +130,8 @@ type
     Interpolated: Integer;
     { Book words not spoken. }
     NotSpoken: Integer;
+    { Book words in a gap of the transcript (wamNotHeard). }
+    NotHeard: Integer;
     { Book words without a time for being punctuation only. }
     Punctuation: Integer;
     { Reading speed of the timed words, words per second. }
@@ -122,6 +144,14 @@ type
     LongestRun: Integer;
     { Index of the first book word of that run (-1 when there is none). }
     LongestRunStart: Integer;
+    { The recogniser's habits learned from this book and recording, as
+      'book=heard (count)': a book word heard differently in at least half
+      of its places (5 or more), each way it was heard at least twice, the
+      heard form never a word of the book. The alignment was run again
+      with these counting as equal. }
+    Learned: TWhisperStringArray;
+    { Book words paired through a learned habit (counted in Exact). }
+    LearnedWords: Integer;
   end;
 
   { A stretch of book words of one kind, for reports. }
@@ -130,11 +160,11 @@ type
     First: Integer;
     { Last book word. }
     Last: Integer;
-    { wamInterpolated or wamNotSpoken. }
+    { wamInterpolated, wamNotSpoken or wamNotHeard. }
     Match: TWhisperAlignMatch;
     { Time where the stretch is, 10 ms units: its start for interpolated
-      words, the end of the timed word before it for words not spoken (-1
-      at the very start). }
+      words and words not heard, the end of the timed word before it for
+      words not spoken (-1 at the very start). }
     Time: Int64;
   end;
   { Stretches, in book order. }
@@ -163,12 +193,12 @@ function WhisperSplitText(const AText: string): TWhisperStringArray;
 function WhisperAlignText(const ABookWords: TWhisperStringArray; const AWords: TWhisperWordArray;
   out AStats: TWhisperAlignStats): TWhisperAlignedWordArray;
 
-{ The stretches of interpolated and of not-spoken words, at least
+{ The stretches of interpolated, not-spoken and not-heard words, at least
   AMinWords long (punctuation-only words inside a stretch count with it). }
 function WhisperAlignRegions(const AAligned: TWhisperAlignedWordArray; AMinWords: Integer): TWhisperAlignRegionArray;
 
 { Name of a match kind ('none', 'exact', 'similar', 'interpolated',
-  'not spoken'). }
+  'not spoken', 'not heard'). }
 function WhisperAlignMatchName(AMatch: TWhisperAlignMatch): string;
 
 implementation
@@ -213,6 +243,16 @@ const
   MIN_ISOLATING_RUN = 20;
   { Most alignment passes. }
   MAX_PASSES = 10;
+  { A book token is learned when it was paired at least this often ... }
+  LEARN_MIN_PAIRED = 5;
+  { ... and heard differently in at least this share of those places; ... }
+  LEARN_MIN_SHARE = 0.5;
+  { ... each way it was heard this often or more is learned. }
+  LEARN_MIN_VARIANT = 2;
+  { Cost of leaving a book token unpaired where the transcript is silent
+    (WHISPER_ALIGN_SILENCE or more): book words that the transcript lacks
+    belong in its silences, not somewhere a common word happens to pair. }
+  COST_GAP_IN_SILENCE = 0.05;
   { Before the first and after the last anchor only this many book tokens
     per transcript token (plus EDGE_SLACK) next to the anchor can pair:
     text further out could not have been read in that time. }
@@ -221,7 +261,7 @@ const
   EDGE_SLACK = 20;
   { Names of the match kinds. }
   MATCH_NAMES: array[TWhisperAlignMatch] of string = ('none', 'exact', 'similar', 'interpolated',
-    'not spoken');
+    'not spoken', 'not heard');
   { Number words 0..19. }
   SMALL_NUMBERS: array[0..19] of string = ('zero', 'one', 'two', 'three', 'four', 'five', 'six',
     'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
@@ -281,6 +321,10 @@ type
     Word: TIntArray;
     { Tokens used. }
     Count: Integer;
+    { Transcript only: the token is the last of its word and the transcript
+      is silent after it for WHISPER_ALIGN_SILENCE or more (nil for the
+      book). }
+    SilenceAfter: TBoolArray;
   end;
 
 function WhisperAlignMatchName(AMatch: TWhisperAlignMatch): string;
@@ -883,11 +927,19 @@ begin
   end;
   for I := 1 to NB do
   begin
-    Cur[0] := I * COST_GAP;
+    // book tokens before the gap's first transcript token: in a silence
+    // when the token before the gap is followed by one
+    if (T0 > 0) and (AT.SilenceAfter <> nil) and AT.SilenceAfter[T0 - 1] then
+      Cur[0] := Row1[0] + COST_GAP_IN_SILENCE
+    else
+      Cur[0] := Row1[0] + COST_GAP;
     Trace[I * W] := STEP_BOOK;
     for J := 1 to NT do
     begin
-      C := Row1[J] + COST_GAP;
+      if (AT.SilenceAfter <> nil) and AT.SilenceAfter[T0 + J - 1] then
+        C := Row1[J] + COST_GAP_IN_SILENCE
+      else
+        C := Row1[J] + COST_GAP;
       Step := STEP_BOOK;
       D := Cur[J - 1] + COST_GAP;
       if (D < C) or (APreferLate and (D = C)) then
@@ -1026,7 +1078,7 @@ end;
   AExcluded for the next pass). }
 function AlignPass(const ABookWords: TWhisperStringArray; const AWords: TWhisperWordArray;
   const ATrans: TTokens; var AExcluded: TBoolArray; var AResult: TWhisperAlignedWordArray;
-  var AStats: TWhisperAlignStats): Integer;
+  var AStats: TWhisperAlignStats; ACounts: TStringList): Integer;
 var
   BT: TTokens;
   Pairs: TPairArray;
@@ -1034,7 +1086,7 @@ var
   AllExact: TBoolArray;
   Total, Acc, Span, Rate, Limit: Double;
   FirstTime, LastTime: Int64;
-  Timed, LeftIsolating, RightIsolating: Boolean;
+  Timed, Unheard, LeftIsolating, RightIsolating: Boolean;
 begin
   Result := 0;
   for I := 0 to High(AResult) do
@@ -1048,10 +1100,25 @@ begin
   BT.Norm := nil;
   BT.Word := nil;
   BT.Count := 0;
+  BT.SilenceAfter := nil;
   for I := 0 to High(ABookWords) do
     if not AExcluded[I] then
       AddTokens(ABookWords[I], I, BT);
   Pairs := PairTokens(BT, ATrans, AStats.Anchors);
+  // book token / heard token pairs, for learning the recogniser's habits
+  if ACounts <> nil then
+  begin
+    ACounts.Clear;
+    for I := 0 to High(Pairs) do
+      if (not Pairs[I].Exact) or (BT.Norm[Pairs[I].B] = ATrans.Norm[Pairs[I].T]) then
+      begin
+        J := ACounts.IndexOf(string(BT.Norm[Pairs[I].B]) + #9 + string(ATrans.Norm[Pairs[I].T]));
+        if J < 0 then
+          ACounts.AddObject(string(BT.Norm[Pairs[I].B]) + #9 + string(ATrans.Norm[Pairs[I].T]), TObject(1))
+        else
+          ACounts.Objects[J] := TObject(NativeInt(ACounts.Objects[J]) + 1);
+      end;
+  end;
 
   // a paired word spans its transcript words
   AllExact := nil;
@@ -1147,6 +1214,7 @@ begin
     while (Right <= High(AResult)) and (AResult[Right].WordIndex < 0) do
       Inc(Right);
     Timed := (Left >= 0) and (Right <= High(AResult));
+    Unheard := False;
     if Timed then
     begin
       Run := Right - Left - 1;
@@ -1155,6 +1223,19 @@ begin
         Span := 0;
       Rate := Run * WHISPER_TICKS_PER_SECOND / (Span + 1);
       Timed := (Run < RATE_MIN_RUN) or (Rate <= Limit);
+      // the transcript is silent there: no word of it starts in between
+      if Span >= WHISPER_ALIGN_SILENCE then
+      begin
+        Unheard := True;
+        for K := AResult[Left].WordIndex + 1 to AResult[Right].WordIndex - 1 do
+          if (AWords[K].T0 >= AResult[Left].T1) and (AWords[K].T0 < AResult[Right].T0) then
+          begin
+            Unheard := False;
+            Break;
+          end;
+        if Unheard then
+          Timed := True;
+      end;
     end;
     if Timed then
     begin
@@ -1169,6 +1250,8 @@ begin
         AResult[K].T1 := Round(Acc);
         if Letters(ABookWords[K]) = '' then
           AResult[K].Match := wamNone
+        else if Unheard then
+          AResult[K].Match := wamNotHeard
         else
           AResult[K].Match := wamInterpolated;
       end;
@@ -1238,14 +1321,132 @@ begin
   end;
 end;
 
+{ Adds AN to the count of AKey in the sorted list AList. }
+procedure AddCount(AList: TStringList; const AKey: string; AN: Integer);
+var
+  J: Integer;
+begin
+  J := AList.IndexOf(AKey);
+  if J < 0 then
+    AList.AddObject(AKey, TObject(NativeInt(AN)))
+  else
+    AList.Objects[J] := TObject(NativeInt(AList.Objects[J]) + AN);
+end;
+
+{ Count of AKey in the sorted list AList (0 if absent). }
+function CountOf(AList: TStringList; const AKey: string): Integer;
+var
+  J: Integer;
+begin
+  J := AList.IndexOf(AKey);
+  if J < 0 then
+    Result := 0
+  else
+    Result := Integer(NativeInt(AList.Objects[J]));
+end;
+
+{ From ACounts ('book' #9 'heard' with counts, the last pass's pairs)
+  learns the recogniser's habits: a book token paired LEARN_MIN_PAIRED
+  times or more and heard differently in at least LEARN_MIN_SHARE of them;
+  each way it was heard LEARN_MIN_VARIANT times or more, unless that form
+  is a token of the book itself (then the difference may be the reader's)
+  or is heard for two book tokens. AMap (sorted) gets the heard forms, each
+  with its book token in AMapBook at the index in Objects. }
+procedure LearnHabits(const ABookWords: TWhisperStringArray; ACounts, AMap, AMapBook: TStringList;
+  var AStats: TWhisperAlignStats);
+var
+  I, K, N, P: Integer;
+  B, Heard: string;
+  Toks: TTokens;
+  BookSet, Paired, Other, Ambiguous, Shown: TStringList;
+begin
+  AMap.Clear;
+  AMapBook.Clear;
+  Toks.Norm := nil;
+  Toks.Word := nil;
+  Toks.Count := 0;
+  Toks.SilenceAfter := nil;
+  for I := 0 to High(ABookWords) do
+    AddTokens(ABookWords[I], I, Toks);
+  BookSet := TStringList.Create;
+  Paired := TStringList.Create;
+  Other := TStringList.Create;
+  Ambiguous := TStringList.Create;
+  Shown := TStringList.Create;
+  try
+    BookSet.Sorted := True;
+    BookSet.Duplicates := dupIgnore;
+    Paired.Sorted := True;
+    Other.Sorted := True;
+    Ambiguous.Sorted := True;
+    Ambiguous.Duplicates := dupIgnore;
+    for I := 0 to Toks.Count - 1 do
+      BookSet.Add(string(Toks.Norm[I]));
+    for I := 0 to ACounts.Count - 1 do
+    begin
+      P := Pos(#9, ACounts[I]);
+      B := Copy(ACounts[I], 1, P - 1);
+      Heard := Copy(ACounts[I], P + 1, MaxInt);
+      N := Integer(NativeInt(ACounts.Objects[I]));
+      AddCount(Paired, B, N);
+      if Heard <> B then
+        AddCount(Other, B, N);
+    end;
+    for I := 0 to ACounts.Count - 1 do
+    begin
+      P := Pos(#9, ACounts[I]);
+      B := Copy(ACounts[I], 1, P - 1);
+      Heard := Copy(ACounts[I], P + 1, MaxInt);
+      N := Integer(NativeInt(ACounts.Objects[I]));
+      if (Heard = B) or (N < LEARN_MIN_VARIANT) or (BookSet.IndexOf(Heard) >= 0) or
+        (CountOf(Paired, B) < LEARN_MIN_PAIRED) or (CountOf(Other, B) < LEARN_MIN_SHARE * CountOf(Paired, B)) then
+        Continue;
+      K := AMap.IndexOf(Heard);
+      if K >= 0 then
+        Ambiguous.Add(Heard)
+      else
+      begin
+        AMapBook.Add(B);
+        AMap.AddObject(Heard, TObject(NativeInt(AMapBook.Count - 1)));
+        Shown.Add(Format('%s=%s (%d)', [B, Heard, N]));
+      end;
+    end;
+    for I := 0 to Ambiguous.Count - 1 do
+    begin
+      K := AMap.IndexOf(Ambiguous[I]);
+      if K >= 0 then
+        AMap.Delete(K);
+    end;
+    AStats.Learned := nil;
+    for I := 0 to Shown.Count - 1 do
+    begin
+      P := Pos('=', Shown[I]);
+      Heard := Copy(Shown[I], P + 1, Pos(' (', Shown[I]) - P - 1);
+      if Ambiguous.IndexOf(Heard) < 0 then
+      begin
+        SetLength(AStats.Learned, Length(AStats.Learned) + 1);
+        AStats.Learned[High(AStats.Learned)] := Shown[I];
+      end;
+    end;
+  finally
+    Shown.Free;
+    Ambiguous.Free;
+    Other.Free;
+    Paired.Free;
+    BookSet.Free;
+  end;
+end;
+
 function WhisperAlignText(const ABookWords: TWhisperStringArray; const AWords: TWhisperWordArray;
   out AStats: TWhisperAlignStats): TWhisperAlignedWordArray;
 var
   Trans: TTokens;
   Excluded: TBoolArray;
-  I, Removed, Run, RunStart: Integer;
+  I, W, Removed, Run, RunStart: Integer;
+  Counts, Map, MapBook: TStringList;
+  Learned: Boolean;
 begin
-  FillChar(AStats, SizeOf(AStats), 0);
+  AStats := Default(TWhisperAlignStats);
   AStats.BookWords := Length(ABookWords);
   AStats.TranscriptWords := Length(AWords);
   AStats.LongestRunStart := -1;
@@ -1256,13 +1457,55 @@ begin
   Trans.Norm := nil;
   Trans.Word := nil;
   Trans.Count := 0;
+  Trans.SilenceAfter := nil;
   for I := 0 to High(AWords) do
     AddTokens(AWords[I].Text, I, Trans);
-  repeat
-    Inc(AStats.Passes);
-    Removed := AlignPass(ABookWords, AWords, Trans, Excluded, Result, AStats);
-    Inc(AStats.Isolated, Removed);
-  until (Removed = 0) or (AStats.Passes >= MAX_PASSES);
+  SetLength(Trans.SilenceAfter, Trans.Count);
+  for I := 0 to Trans.Count - 1 do
+  begin
+    W := Trans.Word[I];
+    Trans.SilenceAfter[I] := (W < High(AWords)) and ((I = Trans.Count - 1) or (Trans.Word[I + 1] <> W)) and
+      (AWords[W + 1].T0 - AWords[W].T1 >= WHISPER_ALIGN_SILENCE);
+  end;
+  Counts := TStringList.Create;
+  Map := TStringList.Create;
+  MapBook := TStringList.Create;
+  try
+    Counts.Sorted := True;
+    Map.Sorted := True;
+    repeat
+      Inc(AStats.Passes);
+      Removed := AlignPass(ABookWords, AWords, Trans, Excluded, Result, AStats, Counts);
+      Inc(AStats.Isolated, Removed);
+    until (Removed = 0) or (AStats.Passes >= MAX_PASSES);
+    // the recogniser's habits: learn them, then align again with them
+    LearnHabits(ABookWords, Counts, Map, MapBook, AStats);
+    Learned := Map.Count > 0;
+    if Learned then
+    begin
+      for I := 0 to Trans.Count - 1 do
+      begin
+        W := Map.IndexOf(string(Trans.Norm[I]));
+        if W >= 0 then
+          Trans.Norm[I] := UTF8String(MapBook[Integer(NativeInt(Map.Objects[W]))]);
+      end;
+      // the clusters already taken out stay out
+      repeat
+        Inc(AStats.Passes);
+        Removed := AlignPass(ABookWords, AWords, Trans, Excluded, Result, AStats, Counts);
+        Inc(AStats.Isolated, Removed);
+      until (Removed = 0) or (AStats.Passes >= 2 * MAX_PASSES);
+      // book words paired through a habit
+      for I := 0 to High(Result) do
+        if (Result[I].Match = wamExact) and (Result[I].WordIndex >= 0) and
+          (Map.IndexOf(WhisperNormalizeWord(AWords[Result[I].WordIndex].Text)) >= 0) then
+          Inc(AStats.LearnedWords);
+    end;
+  finally
+    MapBook.Free;
+    Map.Free;
+    Counts.Free;
+  end;
 
   Run := 0;
   RunStart := 0;
@@ -1273,6 +1516,7 @@ begin
       wamSimilar: Inc(AStats.Similar);
       wamInterpolated: Inc(AStats.Interpolated);
       wamNotSpoken: Inc(AStats.NotSpoken);
+      wamNotHeard: Inc(AStats.NotHeard);
     else
       Inc(AStats.Punctuation);
     end;
@@ -1303,7 +1547,7 @@ begin
   while I <= High(AAligned) do
   begin
     M := AAligned[I].Match;
-    if (M <> wamInterpolated) and (M <> wamNotSpoken) then
+    if (M <> wamInterpolated) and (M <> wamNotSpoken) and (M <> wamNotHeard) then
     begin
       Inc(I);
       Continue;
@@ -1319,7 +1563,7 @@ begin
       Result[N].First := I;
       Result[N].Last := J;
       Result[N].Match := M;
-      if M = wamInterpolated then
+      if M <> wamNotSpoken then
         Result[N].Time := AAligned[I].T0
       else
       begin

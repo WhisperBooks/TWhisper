@@ -6,8 +6,9 @@
   files in every common encoding (PCM 8 / 16 / 24 / 32-bit, IEEE float
   32 / 64-bit, WAVE_FORMAT_EXTENSIBLE), any channel count and any sample
   rate, mixes down to mono and resamples with a windowed-sinc filter.
-  Compressed formats (MP3, AAC, Opus, ...) are not decoded: convert them first,
-  e.g. @code(ffmpeg -i in.mp3 -ar 16000 -ac 1 -c:a pcm_s16le out.wav).
+  Compressed formats (MP3, AAC, Opus, ...) are read by Whisper.FFmpeg
+  (FFmpeg's shared libraries), or convert them first, e.g.
+  @code(ffmpeg -i in.mp3 -ar 16000 -ac 1 -c:a pcm_s16le out.wav).
 
   Framework-free; compiles with Delphi and FPC. *)
 unit Whisper.Audio;
@@ -55,7 +56,9 @@ function WhisperLoadWav(const AFileName: string; out AInfo: TWhisperWavInfo): TW
 function WhisperLoadWav(const AFileName: string): TWhisperSamples; overload;
 
 { Reads WAV data from a stream (from its current position) and converts it
-  for whisper.cpp.
+  for whisper.cpp. Reads RF64 / BW64 too, and a plain WAV over 4 GB whose
+  size fields wrapped round (ffmpeg without -rf64) to the end of the file.
+  At most High(Integer) frames: convert anything longer to 16 kHz mono.
   @raises(EWhisperError when the data is not WAV or unsupported.) }
 function WhisperLoadWavStream(AStream: TStream; out AInfo: TWhisperWavInfo): TWhisperSamples;
 
@@ -91,6 +94,8 @@ const
   SINC_ZERO_CROSSINGS = 16;
   { Fractional positions the resampling filter is tabulated for. }
   RESAMPLE_PHASES = 1024;
+  { Bytes of WAV data decoded at a time. }
+  WAV_BLOCK_BYTES = 1024 * 1024;
 
 function ReadTag(AStream: TStream): AnsiString;
 begin
@@ -169,21 +174,26 @@ end;
 function WhisperLoadWavStream(AStream: TStream; out AInfo: TWhisperWavInfo): TWhisperSamples;
 var
   Tag: AnsiString;
-  ChunkSize, DataSize: UInt32;
+  ChunkSize: UInt32;
+  DataSize, Ds64DataSize, Remaining: Int64;
   FormatTag, BlockAlign: UInt16;
-  HaveFmt, HaveData: Boolean;
+  HaveFmt, HaveData, Rf64: Boolean;
   ExtSize: UInt16;
   SubFormat: UInt16;
   Data: TBytes;
   Mono: TWhisperSamples;
-  BytesPerSample, Frame, C: Integer;
+  BytesPerSample, C, Frame, BlockFrames, Got: Integer;
+  Done: Int64;
   P: PByte;
   Sum: Single;
   Next: Int64;
 begin
   Result := nil;
   FillChar(AInfo, SizeOf(AInfo), 0);
-  if ReadTag(AStream) <> 'RIFF' then
+  Tag := ReadTag(AStream);
+  // RF64 / BW64 (EBU): a WAV over 4 GB, sizes in a ds64 chunk.
+  Rf64 := (Tag = 'RF64') or (Tag = 'BW64');
+  if (Tag <> 'RIFF') and not Rf64 then
     raise EWhisperError.Create('Not a WAV file (no RIFF header)');
   ReadU32(AStream);
   if ReadTag(AStream) <> 'WAVE' then
@@ -191,6 +201,7 @@ begin
   HaveFmt := False;
   HaveData := False;
   DataSize := 0;
+  Ds64DataSize := -1;
   BlockAlign := 0;
   FormatTag := 0;
   while not HaveData do
@@ -200,7 +211,13 @@ begin
     Tag := ReadTag(AStream);
     ChunkSize := ReadU32(AStream);
     Next := AStream.Position + ChunkSize + (ChunkSize and 1);   // chunks are word-aligned
-    if Tag = 'fmt ' then
+    if (Tag = 'ds64') and (ChunkSize >= 16) then
+    begin
+      AStream.ReadBuffer(Remaining, 8);    // RIFF size
+      AStream.ReadBuffer(Ds64DataSize, 8);
+      AStream.Position := Next;
+    end
+    else if Tag = 'fmt ' then
     begin
       FormatTag := ReadU16(AStream);
       AInfo.Channels := ReadU16(AStream);
@@ -227,9 +244,15 @@ begin
       if not HaveFmt then
         raise EWhisperError.Create('WAV data chunk before the fmt chunk');
       DataSize := ChunkSize;
-      // A streamed WAV may have a size of 0 or more than is there: read what is.
-      if (DataSize = 0) or (Int64(DataSize) > AStream.Size - AStream.Position) then
-        DataSize := UInt32(AStream.Size - AStream.Position);
+      Remaining := AStream.Size - AStream.Position;
+      if Rf64 and (ChunkSize = $FFFFFFFF) and (Ds64DataSize >= 0) then
+        DataSize := Ds64DataSize;
+      // A streamed WAV may have a size of 0 or more than is there, and a
+      // plain RIFF WAV over 4 GB has sizes that wrapped round (what
+      // ffmpeg writes without -rf64): read what is there.
+      if (DataSize = 0) or (DataSize > Remaining) or
+        ((not Rf64) and (Remaining > Int64(High(UInt32)))) then
+        DataSize := Remaining;
       HaveData := True;
     end
     else
@@ -260,21 +283,37 @@ begin
   AInfo.Frames := DataSize div BlockAlign;
   if AInfo.Frames = 0 then
     Exit;
-  SetLength(Data, AInfo.Frames * BlockAlign);
-  AStream.ReadBuffer(Data[0], Length(Data));
+  if AInfo.Frames > High(Integer) then
+    raise EWhisperError.CreateFmt('WAV too long to read whole: %d frames (at most %d) - convert it to ' +
+      '%d Hz mono first', [AInfo.Frames, High(Integer), WHISPER_SAMPLE_RATE]);
   Mono := nil;
   SetLength(Mono, AInfo.Frames);
-  for Frame := 0 to Integer(AInfo.Frames) - 1 do
+  // Decode a block at a time: no copy of a file of several GB in memory.
+  BlockFrames := WAV_BLOCK_BYTES div BlockAlign;
+  if BlockFrames < 1 then
+    BlockFrames := 1;
+  SetLength(Data, BlockFrames * BlockAlign);
+  Done := 0;
+  while Done < AInfo.Frames do
   begin
-    P := @Data[Frame * BlockAlign];
-    Sum := 0;
-    for C := 0 to AInfo.Channels - 1 do
+    Got := BlockFrames;
+    if AInfo.Frames - Done < Got then
+      Got := Integer(AInfo.Frames - Done);
+    AStream.ReadBuffer(Data[0], Got * BlockAlign);
+    for Frame := 0 to Got - 1 do
     begin
-      Sum := Sum + DecodeSample(P, AInfo);
-      Inc(P, BytesPerSample);
+      P := @Data[Frame * BlockAlign];
+      Sum := 0;
+      for C := 0 to AInfo.Channels - 1 do
+      begin
+        Sum := Sum + DecodeSample(P, AInfo);
+        Inc(P, BytesPerSample);
+      end;
+      Mono[Done + Frame] := Sum / AInfo.Channels;
     end;
-    Mono[Frame] := Sum / AInfo.Channels;
+    Inc(Done, Got);
   end;
+  Data := nil;
   Result := WhisperResample(Mono, AInfo.SampleRate, WHISPER_SAMPLE_RATE);
 end;
 

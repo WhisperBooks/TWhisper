@@ -28,7 +28,25 @@ WhisperConsole ggml-large-v3-turbo.bin aladdin.wav --labels aladdin-words.txt --
                                                              word timings (DTW)
 WhisperConsole ggml-large-v3-turbo.bin aladdin.wav --labels aladdin-tokens.txt --no-dtw
                                                              the same from token time stamps
+WhisperConsole ggml-large-v3-turbo.bin book.m4b --chapters --json book.json
+                                                             an audiobook, chapter by chapter
 ```
+
+Audio: a file, a **folder** (every audio file in it, in natural order -
+`chapter2` before `chapter10`, `chapterOne` before `ChapterTwo`, without
+case) or a **playlist** (`.m3u`, `.m3u8` or a `.txt` list, for any other
+order). Several files are transcribed one at a time on one joined time
+line; `--json` adds a `"parts"` list (file, title, start and end in the
+file, offset on the joined time line) and `--labels NAME.txt` writes one
+label track per file (`NAME-01.txt`, ...) with that file's own times.
+A `.wav` file is read directly; any other file (`.m4b`, `.m4a`,
+`.mp3`, `.flac`, `.ogg`, ...) through FFmpeg 8's shared libraries -
+`avutil-60.dll`, `swresample-6.dll`, `avcodec-62.dll`, `avformat-62.dll`
+from a "shared" FFmpeg build - next to the executable, on PATH, in
+whisper.dll's folder, or in the folder given with `--ffmpeg FOLDER`. The
+log shows the chapters. `--chapters` transcribes one chapter at a time (one
+chapter in memory, however long the book), with times from the start of
+the file; the language heard in the first chapter is kept for the rest.
 
 Word options: `--words` loads the model with DTW (alignment heads from the
 model file, flash attention off) and prints every word with its start, end
@@ -44,7 +62,9 @@ An unknown option starting with `-` is an error.
 `--prompt TEXT` gives an initial prompt: vocabulary, names, and the style of
 the text. `--carry-prompt` repeats it in every 30 s window. With
 `--no-context` the windows otherwise lose their punctuation and capitals,
-and a punctuated prompt keeps them:
+and a punctuated prompt should keep them. The prompt is then the only
+context each window gets (the "Transcribing:" line says "initial prompt in
+every window"):
 ```
 .\WhisperConsole ggml-large-v3-turbo.bin aladdin.wav --no-context --carry-prompt --prompt "Once upon a time, there was a story. It was read aloud." --labels words.txt
 ```
@@ -53,10 +73,23 @@ and a punctuated prompt keeps them:
 UTF-8 plain text, for example a Project Gutenberg `.txt`; implies `--words`.
 It prints how many book words were matched, then every stretch of at least
 three words that was **not spoken** (the reader skipped it, or it is front
-matter or a licence) or **interpolated** (spoken, but not heard as written),
-each with its time. `--align-labels FILE` writes the book's own words as
-Audacity labels (interpolated words end in " ?"), plus a "NOT SPOKEN" label
-where each skipped stretch belongs. That is the start of an automated
+matter or a licence), **interpolated** (spoken, but not heard as written) or
+**not heard** (the transcript has no words there for 3 s or more - the
+recogniser dropped them, or it is music or silence: check by ear), each with
+its time. `--align-labels FILE` writes the book's own words as Audacity
+labels (interpolated and not-heard words end in " ?"), plus a "NOT SPOKEN"
+label where each skipped stretch belongs and a "NOT HEARD" label at each
+stretch to check by ear.
+
+Second pass: after each run (each chapter with `--chapters`) every
+stretch of 3 s or more without words that has sound in it is transcribed
+again on its own and put in place - whisper.cpp sometimes ends a 30 s
+window early and skips the rest of it (51 such stretches in a 36-hour
+audiobook; the pass added 875 words there). A stretch only partly filled
+is tried again (up to three rounds). Each one is logged; `--no-fill-gaps`
+turns the pass off. With DTW words, segment times are taken from their
+words: whisper.cpp's own segment time stamps can span seconds of skipped
+speech. That is the start of an automated
 proof-listener for LibriVox recordings.
 ```
 .\WhisperConsole ggml-medium.en.bin aladdin.wav --align aladdin.txt --align-labels aladdin-book.txt

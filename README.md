@@ -102,9 +102,57 @@ sh ./models/download-vad-model.sh silero-v6.2.0 # optional, for Vad = True
 
 `*.en` models are English only; the others are multilingual and can
 translate to English. Audio must be 16 kHz mono float. `Whisper.Audio` reads
-WAV files in any rate, bit depth and channel count and converts them. Convert
-compressed audio first, for example:
-`ffmpeg -i in.mp3 -ar 16000 -ac 1 -c:a pcm_s16le out.wav`.
+WAV files in any rate, bit depth and channel count and converts them, RF64
+and WAV files over 4 GB included.
+
+## Other audio formats and audiobook chapters (FFmpeg)
+
+`Whisper.FFmpeg` reads everything FFmpeg reads - M4B / M4A, MP3, FLAC, Ogg,
+Opus, WAV, the sound of a video - through FFmpeg's **shared** libraries,
+loaded at run time by name like whisper.cpp's. Nothing is linked in; a
+program that never opens such a file never needs them.
+
+- **Which libraries:** FFmpeg 8 - `avutil-60.dll`, `swresample-6.dll`,
+  `avcodec-62.dll`, `avformat-62.dll` on Windows (a "shared" build; the
+  usual single `ffmpeg.exe` downloads have no DLLs), `libavutil.so.60` ...
+  on Linux, `libavutil.60.dylib` ... on macOS. LGPL and GPL builds both
+  work; the licence is in the log line.
+- **Why the major version matters:** a few fields of FFmpeg's structs
+  (the chapter list, the stream's time base, a frame's samples) are read
+  at fixed offsets. `tools/ffmpeg_layout.py` takes them from FFmpeg's own
+  headers with clang for every platform and writes
+  `lib/Whisper.FFmpegLayout.inc`; `TWhisperFFmpeg.Create` refuses other
+  major versions and checks the Pascal records against the C layout.
+- **Chapters:** `TWhisperAudioFile.Chapters` lists them (title, start,
+  end); `Read(Start, End)` decodes any range to 16 kHz mono. An audiobook
+  is best transcribed a chapter at a time: one chapter in memory, however
+  long the book. `WhisperAppendTranscription` (Whisper.Core) joins the
+  chapters' results with their times moved to the start of the file.
+
+```pascal
+FF := TWhisperFFmpeg.Create;                  // or Create('C:\ffmpeg\bin')
+Book := TWhisperAudioFile.Create(FF, 'book.m4b');
+for I := 0 to High(Book.Chapters) do
+begin
+  Part := Run.Execute(Book.Read(Book.Chapters[I].StartTime, Book.Chapters[I].EndTime));
+  WhisperAppendTranscription(All, Part, Book.Chapters[I].StartTime);
+end;
+```
+
+DRM-protected files (Audible's AAX) are not read.
+
+**A recording in many files** - one file per chapter, several files per
+chapter, WAV / FLAC / OGG / MP3 mixed - is a `TWhisperAudioSet`
+(`Whisper.AudioSet`): `WhisperListAudioFiles` takes a file, a folder
+(every audio file in it, in natural order) or a playlist (`.m3u`, `.m3u8`,
+`.txt`); each file is a part, or each chapter of a file with chapters, read
+one at a time. A part's `Offset` on the joined time line is the sum of the
+lengths decoded before it, so a word's time maps back exactly to a file and
+a time in it. The natural order reads file names as people do, without
+case: `chapter2` before `chapter10`, and `chapterOne`, `ChapterTwo`,
+`chapter_three`, `chapter4`, `Part IV`, `Twenty-First` by their numbers
+(English number words and Roman numerals, where a word starts and ends).
+A playlist fixes any other order.
 
 ## Choosing the device (and model)
 
@@ -154,8 +202,8 @@ method, which whisper.cpp implements as `dtw_token_timestamps`.
 - **Classes:** `WhisperEnableDtw(ModelFile, ContextParams)` before
   `TWhisperModel.Create`, then `TWhisperRun.IncludeWords := True`.
 - **Export:** `WhisperWordsToLabels` (an Audacity label track, to check the
-  timings by ear: File > Import > Labels over the audio) and
-  `WhisperWordsToJson` (segments with their words). Save with
+  timings by ear: File > Import > Labels in Audacity 3, File > Import in
+  Audacity 4) and `WhisperWordsToJson` (segments with their words). Save with
   `WhisperSaveTextFile` (UTF-8 without a byte order mark).
 
 What `WhisperEnableDtw` does, and why:
@@ -220,6 +268,21 @@ all differ, and text and recording may come from different editions.
   that would mean reading far faster than this reader does (2.5 times their
   speed, and at least 6 words a second). Such a run was not spoken, and so
   is text before the first or after the last timed word.
+- **Silences of the transcript.** Where the transcript has no words for
+  3 s or more (`WHISPER_ALIGN_SILENCE`), the book words it lacks go into
+  that silence and are **not heard** (`wamNotHeard`), not blamed on the
+  reader: the recogniser may have dropped them. `TWhisperRun.FillGaps`
+  transcribes such stretches again first (whisper.cpp sometimes ends a 30 s
+  window early and skips the rest of it).
+- **The recogniser's habits.** After a first alignment, a book word heard
+  differently in at least half of its places (5 or more) is learned with
+  each way it was heard twice or more - unless that form is itself a word
+  of the book, where the difference may be the reader's. The alignment is
+  run again with these counting as equal. Nothing about names or spelling
+  is built in: "Tsurani" heard as "Surani", "Borric" as "Boric", "armor" as
+  "armour" are all learned from the book and the recording alone. For a
+  proof-listener this is the line between the recogniser's habit (all
+  through the book) and a reader's slip (once). `Stats.Learned` lists them.
 - **Coincidences.** A small cluster of matches with unspoken text on both
   sides is taken out and the alignment is run again. Gutenberg's header
   repeats the title, so this finds the title where it is really read.
@@ -238,6 +301,22 @@ text including the Gutenberg header and licence:
 | Soft hyphens, ligatures, accents, numbers as digits | no word lost |
 
 A 166k-word book aligns in about a second.
+
+Tested on a 36-hour unabridged audiobook (M4B, 40 chapters, large-v3-turbo
+DTW words, 291 521 words) against a calibre EPUB of the same edition
+(293 527 words): 96.4 % exact, 2.2 % similar (mostly invented names), 0.7 %
+interpolated, 0.4 % not spoken (mostly a foreword the reader does not
+read; one 30-word sentence the reader skipped), 0.3 % not heard (where
+whisper.cpp dropped speech), in 1.4 s; with the second pass, not heard fell
+from 755 words to 46, and learning the recogniser's habits (209 of them,
+mostly invented names) took exact to 97.9 % and similar to 1.0 %. A retail EPUB (Open Road) against its 8 h 45 m
+audiobook: 95.0 % exact, the publisher's front and back matter not spoken.
+
+Before the second pass, `WhisperCleanTranscription` takes out what the
+decoder made up: a sentence repeated as a loop over real speech, a carried
+prompt given back ("Name, Name, Name." stretched over 30 s), and words DTW
+stretched over speech it skipped. The gaps that leaves are transcribed
+again.
 
 In WhisperConsole: `--align book.txt --align-labels book-labels.txt` (see
 demos/WhisperConsole/README.md).
@@ -284,23 +363,32 @@ lib/       framework-free units (Delphi + FPC 3.2.2)
   Whisper.DynLib        dynamic library loading (from TSteamAPI)
   Whisper.API           TWhisperLib: loading, backends, devices, every export, ABI shims, layout check, log
   Whisper.Audio         WAV reader, 16-bit PCM conversion, windowed-sinc resampler
+  Whisper.FFmpeg        any audio format and its chapters through FFmpeg's shared libraries
+  Whisper.FFmpegLayout.inc  GENERATED by tools/ffmpeg_layout.py - FFmpeg field offsets
   Whisper.Words         word timings: model header -> DTW heads, tokens -> words, JSON / Audacity labels
   Whisper.Align         book text <-> transcript words: every book word gets its spoken time
   Whisper.Core          TWhisperModel, TWhisperParams, TWhisperRun, TWhisperBenchmark, text export
+  Whisper.AudioSet      a recording in many files (folder, playlist, chapters) on one time line
   Whisper.Components    TCustomWhisper (lifecycle, worker thread, main-thread events)
 fmx/       Whisper.FMX (TWhisperAPI), Whisper.FMX.Reg (design time)
 packages/  WhisperAPI (runtime, rtl), WhisperAPIFMX (runtime), dclWhisperAPIFMX (design): .dpk + .dproj
 WhisperAPI.groupproj   every project (apps, runtime packages, design package)
 demos/     WhisperDemo (FMX), WhisperConsole (console, smoke test): .dpr + .dproj + README.md
-tools/     verify_layout.py, pasdoc_check.py, gen_projects.py, project_check.py
+tools/     verify_layout.py, ffmpeg_layout.py, pasdoc_check.py, gen_projects.py, project_check.py
 ```
 
 ## Packages and demos
 
-Open **`WhisperAPI.groupproj`** at the repository root. The layout follows
-TSteamAPI: the Projects window lists the applications first, then the runtime
-packages, then the design package. Build All builds the runtime packages
-first, then the design package, then the demos.
+Open **`WhisperAPI.groupproj`** at the repository root. It lists the projects
+in build order:
+1. the runtime package `WhisperAPI`;
+2. the FMX runtime package `WhisperAPIFMX`;
+3. the design package `dclWhisperAPIFMX`;
+4. the demos.
+
+Build All compiles each package before everything that needs it, so
+Delphi's quick re-compilation works. Keep that order: another one breaks
+builds. `tools/project_check.py` reports any other order.
 
 | Project | Kind | Platforms |
 |---|---|---|
@@ -405,4 +493,5 @@ WhisperConsole ggml-large-v3-turbo.bin book.wav --labels words.txt --json words.
 python3 tools/pasdoc_check.py                       PasDoc on everything, ASCII only
 python3 tools/project_check.py                      .dproj / .groupproj / .dpr / .dpk consistency
 python3 tools/verify_layout.py <whisper.cpp> --write  after updating whisper.cpp
+python3 tools/ffmpeg_layout.py <FFmpeg include> --write  after moving to another FFmpeg major version
 ```

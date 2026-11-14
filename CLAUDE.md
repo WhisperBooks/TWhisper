@@ -41,7 +41,11 @@ speed never picks the model on its own (accuracy).
   include `..\lib\Whisper.inc` by relative path (Delphi looks for an include
   next to the unit or on the search path).
 - GENERATED, never edit by hand: `lib/Whisper.Layout.inc`
-  (tools/verify_layout.py).
+  (tools/verify_layout.py) and `lib/Whisper.FFmpegLayout.inc`
+  (tools/ffmpeg_layout.py <FFmpeg include folder> --write). The OFFSETS /
+  RECORDS tables of ffmpeg_layout.py, the records of Whisper.FFmpeg and
+  the Add(...) list of WhisperFFmpegCheckLayout go together, as for
+  whisper.h.
 - The FIELDS table of tools/verify_layout.py, the record declarations in
   Whisper.Types and the Add(...) list of TWhisperLib.CheckLayout must list
   the same fields in the same order. Adding a field = all three + rerun
@@ -56,9 +60,15 @@ speed never picks the model on its own (accuracy).
   dclWhisperAPIFMX (design). Runtime packages write their DCUs to
   $(BDSCOMMONDIR)\Dcp\$(Platform) (Win32: \Dcp). Runtime packages also
   build for Win32 (32-bit IDE); programs are 64-bit only.
-- `WhisperAPI.groupproj` at the root lists every project: applications first,
-  then runtime packages, then design; build order from Dependencies and the
-  Build / Clean / Make targets (runtime, design, apps).
+- `WhisperAPI.groupproj` at the root lists every project IN BUILD ORDER
+  (owner, 2026-11-14 - changing it breaks builds and Delphi's quick
+  re-compilation): runtime WhisperAPI, FMX runtime WhisperAPIFMX, design
+  dclWhisperAPIFMX, then the applications; the Build / Clean / Make
+  targets in the same order; no <Dependencies> (the order is the
+  dependency). tools/gen_projects.py writes exactly this and
+  tools/project_check.py fails on any other order. TSteamAPI's group
+  order builds only BY ACCIDENT (owner, 2026-11-14): do not copy its
+  order from there.
 - Component naming: the framework component is `TWhisperAPI`, descending from
   the framework-free `TCustomWhisper` (lib/Whisper.Components). A framework
   unit only publishes properties and overrides ShowHandlerException.
@@ -112,6 +122,14 @@ speed never picks the model on its own (accuracy).
   unchanged file. Say what it goes on top of and list any file to delete
   (a zip cannot delete; the owner uses git rm). A rename = the new file in
   the zip + the old one on the delete list.
+- ZIP NAMES (owner, 2026-11-14 - same-named replacements were confusing):
+  TWhisper-NN-topic.zip, NN a running number that is NEVER reused, not
+  even after a push. A corrected zip gets the NEXT number, never the old
+  name; say which number it replaces. Every delivery says what it goes on
+  top of: a zip number, or a commit when nothing is pending. Last number
+  used: 10. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
+  number in every zip that changes lib/ or the console (its first log
+  line says which build made a log - owner was losing track, 20:26).
 - When the owner says a push is done: clone or fetch into a SEPARATE scratch
   folder and compare every file delivered since the last push (ignore CRLF /
   LF differences).
@@ -154,11 +172,21 @@ standard test because its EPUB text is known.
   real speech: lib/Whisper.Words (new unit), WordTimestamps on the
   component, IncludeWords on TWhisperRun, console --words / --labels /
   --json / --no-dtw, demo "Word timings" + save as Audacity labels / JSON.
-- Last push: f62857d ("Aladdin tests", 2026-11-14 15:3x; checked: every
-  delivered file identical, CMakeLists.txt gone; the IDE added Android
-  EnabledSysJars to dclWhisperAPIFMX.dproj - harmless). NOT YET PUSHED:
-  TWhisper-align2.zip (aligner v2, console --prompt / --carry-prompt /
-  --align / --align-labels, WhisperLoadTextFile). PACKAGE REBUILD needed.
+- Last push: ec18b4a ("Align2", 2026-11-14 ~15:55; checked: the 6
+  delivered files identical; the owner reordered WhisperAPI.groupproj to
+  BUILD ORDER - see Layout rules). NOT YET PUSHED: TWhisper-01-order.zip
+  on ec18b4a (gen_projects.py writes that order, project_check.py checks
+  it, docs) and TWhisper-02-prompt.zip on 01 (carried prompt with no
+  context, Audacity 4 menu wording); TWhisper-03-wav.zip on 02 (WAV
+  over 4 GB, notes); TWhisper-04-ffmpeg.zip on 03 (FFmpeg input, chapters,
+  survey notes of test books 2 and 3); TWhisper-05-gaps.zip on 04 (not
+  heard, second pass, Magician results); TWhisper-06-rounds.zip on 05
+  (segments span DTW words, FillGaps rounds); TWhisper-07-clean.zip on 06
+  (loops, prompt echoes, stretched words; hyphen / number words; log
+  order); TWhisper-08-habits.zip on 07 (learned habits);
+  TWhisper-09-files.zip on 08 (many files, natural order);
+  TWhisper-10-retry.zip on 09 (retry empty gaps without the prompt,
+  delivery number in the console).
 - redistributable_bin/ and *.dll are git-ignored ON PURPOSE (local copy of
   whisper-dev's dlls/; CUDA DLLs exceed GitHub's 100 MB limit). Ship
   binaries as a GitHub Release when needed.
@@ -195,6 +223,22 @@ Commands in READMEs: PowerShell needs the .\ prefix (.\WhisperConsole ...).
    lose punctuation and capitals (lower-case run-on text). Cure to test:
    --carry-prompt --prompt "Once upon a time, there was a story. It was
    read aloud." (carry_initial_prompt repeats a fixed prompt per window).
+   TRIED (owner, 16:07): NO EFFECT - whisper.cpp logged "initial prompt is
+   too long (15 tokens), will use only the last 1 tokens": with
+   n_max_text_ctx = 0 it uses NO prompt at all (whisper.cpp ~7114, 7298:
+   prompt only when n_max_text_ctx > 0; carried prompt limited to
+   n_max_text_ctx - 1). FIXED: TWhisperRun.Execute, when MaxTextContext = 0
+   and CarryInitialPrompt with a prompt, passes n_max_text_ctx = prompt
+   tokens + 1 (whisper_tokenize) - room for the prompt, none for the
+   text before. RERUN (owner, 16:30): WORKS - no warning, punctuated
+   and capitalised throughout, 198 segments, 5299 words, 25 s, no loop;
+   align 5226 exact / 29 similar / 14 interpolated / 3052 not spoken (best
+   so far). Side effects of a fresh prompt per window: a window may start
+   with an inserted or capitalised word ("He would do nothing", "And
+   when"); new mishearing "Aladdon" (twice, 24:19-24:32). RECOMMENDED for
+   book runs: turbo + --no-context --carry-prompt + a punctuated prompt. Same run: medium.en --align gave 5218 / 33 / 13 /
+   3057 (= the offline test); turbo 5224 / 31 / 14 / 3052, 25 s vs 75 s;
+   medium.en dropped the spoken title, turbo kept it.
    Earlier: RESULT (owner, 15:00): turbo
    --no-flash --no-dtw breaks down IDENTICALLY (same 2241 segments, 4999
    words, same times) - FLASH ATTENTION OFF IS THE TRIGGER, NOT DTW.
@@ -209,8 +253,9 @@ Commands in READMEs: PowerShell needs the .\ prefix (.\WhisperConsole ...).
    loops, consider NoContext (or a temperature fallback / repetition check)
    as the default for word runs; the EPUB aligner must also cope with
    dropped and repeated text in any case.
-   STILL TO DO: check BY EAR against Aladdin (Audacity File > Import >
-   Labels) at several points, per model (large-v3-turbo, medium.en,
+   STILL TO DO: check BY EAR against Aladdin (Audacity 3: File > Import >
+   Labels; Audacity 4 has only File > Import, which takes the .txt) at
+   several points, per model (large-v3-turbo, medium.en,
    base.en, a quantised one) and DTW vs --no-dtw; Vulkan0 runs (owner:
    Vulkan is faster); the benchmark with Word timings on. Then fix what
    the ear finds. Known gap: DTW words are contiguous (a word after a
@@ -246,6 +291,212 @@ Commands in READMEs: PowerShell needs the .\ prefix (.\WhisperConsole ...).
    1.1 s. FOUND: Gutenberg boilerplate (div.pg-boilerplate: header,
    "*** START/END OF THE PROJECT GUTENBERG EBOOK ... ***", licence)
    repeats the title and steals its times - the EPUB layer must leave it
+   WAV OVER 4 GB (owner, 17:15: the audiobook converted at full rate was
+   5 GB): Whisper.Audio read only the wrapped size (5 GB -> ~0.7 GB: the
+   first part of the book, SILENTLY). Fixed in zip 03: data size Int64;
+   plain RIFF over 4 GB reads to the end; RF64 / BW64 via ds64; decoded
+   1 MB at a time (no 5 GB copy); over High(Integer) frames = error asking
+   for 16 kHz mono. Tested (FPC): small RIFF + jfk.wav identical to the
+   old reader; RF64; a sparse 4.4 GB float stereo file -> 550M frames,
+   75 s. Advice stays: ffmpeg -ac 1 -ar 16000 (~0.9 GB for 8 h).
+   MAGICIAN RUN (owner, 19:06; zip 04 on Win64, FFmpeg 8 GPL 62.13 DLLs
+   found by name): 36 h 15 m M4B, 40 chapters, --chapters en --no-context
+   --carry-prompt (names prompt): chapter lengths decoded EXACTLY
+   (9.82 / 5.48 / 13.30 / 2523.27 s ...; "timescale not set" harmless),
+   ~1.3 s decode per 40 min chapter, whole book 25 min (87x real time),
+   20711 segments, 291521 words, 2 fallbacks, no loops, no word times
+   going back. Aligned here (FPC harness, EPUB text extracted in spine
+   order, inline tags joined - drop caps OK) with the Calibre EPUB's
+   293.5k words in 1.45 s: 282836 exact (96.4%), 6488 similar (2.2%),
+   2676 interpolated (0.9%), 1200 not spoken (982 = front matter incl.
+   "Foreword to the Revised Edition", not read). Same edition. FINDINGS:
+   (a) WHISPER DROPOUTS: 51 transcript gaps > 5 s (444 s), 11 > 10 s; the
+   decoder ends a window early and skips the rest (e.g. 23:08-23:31 "set
+   the | The Franklin", 54 book words then called NOT SPOKEN - wrong;
+   others called interpolated; one with a repeated/garbled sentence).
+   Fix to build: re-transcribe each gap (time range + the book words it
+   should hold are known), and in the aligner treat book words inside a
+   transcript time gap as NOT HEARD, never "not spoken". (b) NAMES are
+   most similar pairs (Tsurani->Surani/Sarani/Sorani 588, Borric->Boric
+   250, Milamber->Milamba 227, Kasumi->Kazumi 205, Krondor->Crondor 114):
+   build the prompt from the book's own frequent names. (c) US/UK
+   spellings (armor/armour, honor, harbor) should count as exact;
+   contractions (is->it's 97, am->I'm 88) stay similar (may be the
+   narrator). (d) console: chapter title "Sorcerer's" shows as mojibake
+   (Windows console code page), and "from " is empty when FFmpeg is found
+   by name.
+   STEP 1 DONE (zip 05, 19:20): (a) Whisper.Align: transcript tokens
+   carry SilenceAfter (>= WHISPER_ALIGN_SILENCE = 3 s to the next word);
+   AlignGap leaves book tokens unpaired there for COST_GAP_IN_SILENCE
+   (0.05) instead of 1, so missing book words go INTO the silence (the
+   "set the | The Franklin" case had paired a far "the"); an unpaired run
+   spanning >= 3 s with no transcript word starting inside is the new
+   wamNotHeard (times interpolated; stats NotHeard; regions; console
+   labels "NOT HEARD (check by ear)", words marked " ?"). Magician: 755
+   not heard, not spoken 1200 -> 1087, interpolated 2676 -> 2038; the
+   remaining big interpolated runs are number splits ("30" ",000" - see
+   below) and a real 30-word narrator skip stays NOT SPOKEN (21324-21353,
+   "She rode along in silence ..."). Aladdin unchanged (5218/33/13/3057).
+   (b) Whisper.Core: TWhisperRun.FillGaps(Samples, var Result, 3 s,
+   level 0.01, 20 % voiced) - re-runs Execute on each voiced stretch
+   without words (start, between, end; words, else segments), drops
+   segments that only repeat the initial prompt, inserts in time order
+   with WhisperInsertTranscription (new); events off during the pass.
+   Console: on by default (per chapter before appending), logs each gap,
+   --no-fill-gaps. Tested here mechanically only (random model, jfk +
+   4 s silence + jfk: gap found, inserted, order and ids right). OWNER
+   TO TEST: rerun Magician; expect "Second pass: ... words added" lines
+   and far fewer not-heard words. TODO noticed: WhisperBuildWords should
+   join a token like ",000" to the number before ("30" ",000"); the
+   component has no FillGaps property yet.
+   MAGICIAN RUN 2 (owner, 19:50, zip 05): second pass looked at 146
+   gaps >= 3 s, 51 with sound re-run, 875 words added; 292395 words,
+   4 fallbacks, 25 min. Align: not heard 755 -> 46, exact 282835 ->
+   283603; left: the 30-word narrator skip (2:26:05) and a 31-word one
+   at 27:42:28 stay NOT SPOKEN. Owner found the time stamps suspicious:
+   whisper.cpp's own SEGMENT times at a dropout span the skipped speech
+   ("[00:23:09.680 --> 00:23:38.840] The Franklin unfastened ..." - the
+   words start 23:31), and 19 inserted segments were out of order
+   against them; words were right. Zip 06: with DTW, Execute now sets
+   each segment's T0 / T1 from its words; FillGaps does up to 3 rounds
+   (a partly filled stretch - 23:09 gave 26 of 54 words, skipping the
+   first 10 s - is tried again), each stretch once.
+   MOMENT OF THE MAGICIAN (owner, 20:00, zip 05/06 build): M4B 8 h 45 m,
+   19 chapters (Introduction, Chapter 1..17, Acknowledgements) = UNABRIDGED
+   (the 1 h 59 m WAV was the 4 GB wrap); 87768 words, 7 min, 11 fallbacks;
+   second pass 9 gaps, 206 words. Aligned with the RETAIL EPUB (87510
+   words): 83095 exact (95.0%), 2389 similar, 983 interpolated, 901 not
+   spoken (front ads 97, back bio / ads ~650), 0 not heard; 10 passes
+   (MAX_PASSES hit: isolated clusters in the bio, 94 dropped - harmless,
+   3.8 s). Same edition. FOUND: (a) a decoder LOOP at 5:04:58 - "He was a
+   big one of the most powerful things that he had to do." as 7 segments
+   (each repeat its own segment) over ~20 s of real speech; (b) a PROMPT
+   ECHO at 5:55:47 - "Quasequa, Quasequa, Quasequa." (a prompt name) with
+   DTW stretching the words over 30 s (11 s and 17.6 s words), so no gap
+   was seen. Zip 07: WhisperCleanTranscription (Core) takes out segments
+   wholly inside a loop (phrase of 2-40 words x3+, 9+ words, across
+   segments) and prompt-only segments (3+ words or over 3 s; 'Mudge!'
+   stays), cuts words > WHISPER_MAX_WORD_SECONDS (4 s) to 1 s, then
+   FillGaps fills what that opened (and cleans its own parts). On the
+   real transcripts: Moment 7 loop segments + 1 echo + 1 long word;
+   Magician 0 / 0 / 2 (no false positives). Console calls it before the
+   second pass (logs "Cleaned: ..."). Also zip 07: Whisper.Words joins a
+   hyphen / comma / full stop with no space on either side into the word
+   ('three-foot-long', '30,000'; OpenAI and we gave 'three' '-foot'
+   '-long', '30' ',000'); console flushes stdout / stderr so a log of both
+   keeps the order.
+   LEARNED HABITS (zip 08, 20:25; owner: "content unaware" - no name
+   lists, no LLM): Whisper.Align counts book-token / heard-token pairs of
+   the last pass; a book token paired >= 5 times and heard differently in
+   >= half of them is learned with each heard form seen >= 2 times,
+   unless the heard form is a token of the book (may be the reader) or
+   is heard for two book tokens; transcript tokens are rewritten and the
+   alignment run again (excluded clusters stay out). Stats.Learned
+   ('book=heard (n)'), Stats.LearnedWords; console prints the first 20.
+   Magician (run 2): exact 283603 -> 287307 (97.9%), similar 6507 ->
+   2865, interpolated 1926 -> 1864, 209 habits, 4 s. Moment (v6 json):
+   exact 83473 (95.4%), similar 2037, 59 habits (some odd but harmless:
+   cherjal=cherry, geolks=oaks - not book words), 8.4 s because the
+   isolation loop hits MAX_PASSES in the author bio (both phases; harmless,
+   could be looked at). Aladdin unchanged. Moment v6: second pass caught
+   the loop (105 words in 20 s); the echo needs v7.
+   MANY FILES (zip 09, 20:30; owner: creators use a file per chapter or
+   several per chapter, often OGG / WAV): new lib/Whisper.AudioSet.pas
+   (after Whisper.Core in the package): WhisperListAudioFiles (file,
+   folder in natural order, .m3u / .m3u8 / .txt playlist),
+   TWhisperAudioSet (parts = files, or chapters with --chapters; Read(i)
+   one at a time, WAV direct, else FFmpeg; Offset = sum of DECODED
+   lengths before, exact when read in order), WhisperAudioPartsToJson.
+   WhisperNaturalCompare: case-insensitive, separators and extension
+   ignored, digit runs by value, English number words 0-99 (cardinal and
+   ordinal, camelCase or separated: chapterOne, Chapter_Twenty-One) and
+   stand-alone upper-case Roman numerals (Part IV) as numbers, only where
+   a word starts and ends (stone, often, oneself stay words); tested on
+   18 names. Owner: a GUI can offer drag and drop to fix the order.
+   Console: <audio> may be a folder or playlist; parts logged; JSON gets
+   "parts"; --labels writes NAME-01.txt ... per file in file time. Tested
+   (random model): folder of ch1.wav, ch2.m4b (3 chapters), ch10.wav with
+   and without --chapters, and an .m3u in reverse order.
+   MOMENT v7 RUN (owner, 20:26): the cleaning removed the "Quasequa x3"
+   echo and a stretched word; but both bad stretches (5:04:57 loop, 20 s;
+   5:55:47 echo, 30 s) gave 0 words when transcribed again (the part
+   looped / echoed again and was cleaned away), so they stayed as gaps
+   (not heard 219; exact 83420). Zip 10: FillGaps retries a stretch that
+   gave nothing usable once WITHOUT the prompt at temperature 0.2
+   (TWhisperGap.Retried; console says "tried again without the prompt");
+   console prints "WhisperConsole, TWhisper delivery N" first.
+   LATER (owner, 18:19): turn the FFmpeg code into its own reusable
+   components - TFFmpegAPI - "good reusable code". To settle when it is
+   taken up: (1) where it lives - inside TWhisper (own runtime package
+   FFmpegAPI before WhisperAPI in BUILD ORDER) or a separate repository
+   that TWhisper and SRDelphiFMX both use; (2) framework-free core +
+   TCustom... base + FMX publish, as TCustomWhisper / TWhisperAPI; (3)
+   names without "Whisper" (TFFmpegDynLib or shared DynLib, FFmpeg.Layout
+   tool); (4) scope beyond audio (video decode as SRDelphiFMX does,
+   metadata, cover art, chapters for the EPUB layer). Not started.
+   FFMPEG INPUT DONE (zip 04, 2026-11-14 ~18:15): lib/Whisper.FFmpeg.pas
+   (TWhisperFFmpeg loads avutil-60 / swresample-6 / avcodec-62 /
+   avformat-62 by name through TWhisperDynLib, in that order, from a
+   folder or exe folder + system path; checks majors and the Pascal record
+   layout; TWhisperAudioFile: chapters, Read(start, end) -> 16 kHz mono via
+   swr_convert, seek + trim to the range). Large-struct fields by offset
+   (FFOFS_* from Whisper.FFmpegLayout.inc, generated by
+   tools/ffmpeg_layout.py from FFmpeg 8.1 headers for all 9 targets:
+   P64 / P32 / P32I386 like whisper.h). The owner's DelphiFFmpeg.com
+   headers (BSD-style, 8.1, external declarations, "tested Win32 only";
+   SRDelphiFMX uses them with "delayed") were NOT copied in: TWhisper
+   binds by name and only needs ~35 functions. Whisper.Core:
+   WhisperAppendTranscription (join chapter results with a time offset).
+   Console: non-.wav input through FFmpeg, --chapters, --ffmpeg FOLDER
+   (default: exe folder / system path, then whisper.dll's folder); bench
+   reads through FFmpeg too. TESTED here (FPC 3.0, Linux x64, FFmpeg 8.1
+   built from source, LGPL minimal): a generated 3-chapter AAC 22.05 kHz
+   stereo M4B of jfk.wav - chapters read in reverse order each match
+   jfk.wav (lag ~18 samples, ~1 ms); whole file; a 1 s range; console
+   --chapters with offsets right in segments, words and JSON; the WAV path
+   unchanged; a missing-FFmpeg message. NOT TESTED: Delphi build, Win64
+   DLLs (owner's 8.x; avformat 62.13), Win32, a real audiobook.
+   M4B FIRST (owner, 17:51: "doing m4b would be easier as it's internally
+   chapterised"): FFmpeg input moves up, ahead of / together with the
+   EPUB layer. Plan: Whisper.FFmpeg unit loading the FFmpeg 8 shared dlls
+   by name (avformat-62, avcodec-62, avutil-60, swresample-6; same
+   pattern as whisper.dll, no static linking); read chapters (start/end/
+   title from AVFormatContext.chapters), decode + resample to 16 kHz mono
+   ONE CHAPTER AT A TIME (bounded memory, no 37 h limit), transcribe per
+   chapter, word times offset by the chapter start. The chapter list is
+   also the first guide for matching audio to EPUB chapters. AAX (Audible)
+   is DRM'd - not read; DRM-free m4b only. Owner's ffmpeg is Lavf62.13
+   (FFmpeg 8.x); needs a SHARED build for the dlls.
+   (Book 2's audiobook turned out ABRIDGED - 1 h 59 for ~86.7k words; the
+   owner dropped it, 17:48.)
+   EPUB TEST BOOK 3 (owner, 17:48): a CALIBRE conversion (calibre 0.9.0,
+   from an OpenOffice-made book; Raymond E. Feist, HarperCollins 2012) -
+   COPYRIGHTED, local tests only. Shape: EPUB 2, one source split into
+   38 files Magician_split_NNN.html + calibre titlepage.xhtml; ~293k words
+   (very long - likely 30 h+ of audio; 16 kHz mono reaches High(Integer)
+   frames at 37.3 h). Real Unicode punctuation (no entities). Body
+   p.calibre4; parts in h1, chapters in h2 (number spelled out, " - ",
+   title) with empty anchors inside; SPLIT DROP CAPS: the first letter in
+   span[title]>span.calibre5>b.calibre6, the rest of the word straight
+   after the closing tags - words must join across inline tags (only
+   whitespace, <br> and block ends separate words); <br> inside
+   paragraphs (verse / letters) and empty p.western3 of <br>s as scene
+   breaks.
+   EPUB TEST BOOK 2 (owner, 2026-11-14): a DRM-free RETAIL EPUB (Alan Dean
+   Foster, Open Road) - COPYRIGHTED: never commit any of it or text from
+   it; local tests only. Shape: EPUB 2 (OPF 2.0 + NCX), XHTML 1.1 files
+   named .html, UTF-8 with BOM, all punctuation as numeric references
+   (&#8217; &#8220; &#8230; &#8212;); spine = cover, 2 publisher ads,
+   image, title, contents, dedication, image, 17 chapters (headings are
+   Roman numerals in p.ct linking to contents), image, bio, credits, 2 ads;
+   2 files in the zip are not in the spine. Body p.tx; first paragraph
+   p.tx1 opens with a small-caps lead-in in <small> (whole words, upper
+   case, sometimes with <i> inside - not a split drop cap); p.ttx = verse
+   (the spellsongs), often in <i>; ~86.7k words (~9-10 h audio). Em dash
+   between words 13x (split handles U+2014); ellipsis always followed by
+   a space. Needs: spine order, entity decoding, BOM, words keeping their
+   file + text-node offsets for span wrapping across <i>/<small>, Roman
+   numeral headings vs spoken "Chapter One".
    out. NEXT: the EPUB layer (lib/, Delphi System.Zip / FPC zipper): read
    OPF + spine, pick the spoken text (skip boilerplate, keep headings
    such as the h1 title), split at white space and dashes, wrap words or

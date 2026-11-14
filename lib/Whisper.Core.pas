@@ -170,7 +170,10 @@ type
       capped at half the model's text context). 0 = every window is decoded
       on its own (OpenAI's condition_on_previous_text = False): a mistake
       such as a stray quote cannot repeat window after window, at some cost
-      in consistency of spelling and punctuation. }
+      in consistency of spelling and punctuation. With 0 and
+      @link(CarryInitialPrompt), a run gives whisper.cpp just enough room for
+      the initial prompt (whisper.cpp would otherwise drop the prompt too),
+      so every window sees the prompt and nothing else. }
     property MaxTextContext: Int32 read FRaw.n_max_text_ctx write FRaw.n_max_text_ctx;
     { Do not produce time stamps. }
     property NoTimestamps: Boolean read FRaw.no_timestamps write FRaw.no_timestamps;
@@ -191,7 +194,9 @@ type
     property SpeakerTurns: Boolean read FRaw.tdrz_enable write FRaw.tdrz_enable;
     { Initial prompt: vocabulary, names, style. }
     property InitialPrompt: string read FInitialPrompt write FInitialPrompt;
-    { Repeat the initial prompt in every window. }
+    { Repeat the initial prompt in every window. With @link(MaxTextContext)
+      = 0 the prompt is the only context a window gets: punctuation and
+      capitals from a punctuated prompt, no carried-over mistakes. }
     property CarryInitialPrompt: Boolean read FRaw.carry_initial_prompt write FRaw.carry_initial_prompt;
     { Regular expression of tokens to suppress. }
     property SuppressRegex: string read FSuppressRegex write FSuppressRegex;
@@ -233,6 +238,27 @@ type
   TWhisperSegmentEvent = procedure(Sender: TObject; const ASegment: TWhisperSegment) of object;
   { Progress of a run, 0..100. }
   TWhisperProgressEvent = procedure(Sender: TObject; AProgress: Integer) of object;
+
+  { A stretch of a transcription without words that @link(TWhisperRun.FillGaps)
+    looked at. Times in 10 ms units of the transcription. }
+  TWhisperGap = record
+    { Start: the end of the word before (0 at the start). }
+    T0: Int64;
+    { End: the start of the word after (the end of the audio at the end). }
+    T1: Int64;
+    { Share of 20 ms frames above the sound level, 0..1. }
+    Voiced: Single;
+    { Words the second pass found there (0 when it was not run or found
+      nothing usable). }
+    Words: Integer;
+    { The gap was transcribed again (it had sound). }
+    Transcribed: Boolean;
+    { The first try gave nothing usable (a loop or the prompt given back),
+      so it was tried once more without the prompt, at temperature 0.2. }
+    Retried: Boolean;
+  end;
+  { Gaps, in time order. }
+  TWhisperGapArray = array of TWhisperGap;
 
   { One transcription: runs whisper_full on the calling thread and turns
     the C callbacks into Pascal events. Reusable: call Execute again. }
@@ -283,6 +309,23 @@ type
         or the settings cannot work: IncludeWords with Vad, or AudioContext
         on a model loaded with DTW (whisper.cpp would end the process).) }
     function Execute(const ASamples: TWhisperSamples): TWhisperTranscription;
+    { Second pass over the stretches of AResult (a run over ASamples)
+      without words: whisper.cpp sometimes ends a 30 s window early and
+      skips the rest of it, leaving 5 - 25 s of speech untranscribed. Every
+      such stretch of at least AMinGapSeconds that has sound in at least
+      AMinVoiced of its 20 ms frames (RMS of at least AMinLevel) is
+      transcribed again on its own and its segments and words are put in
+      place. Segments that only repeat the initial prompt (what a carried
+      prompt gives back on silence) are dropped; a stretch that gives
+      nothing usable is tried once more without the prompt at temperature
+      0.2 (the prompt is what the decoder gave back). A stretch only partly
+      filled leaves a shorter one, tried again in a next round (at most
+      three rounds; each stretch once). OnSegment and OnProgress are not
+      called for this pass. Works on segments when AResult has no words.
+      @returns(Every gap looked at, with what was found, in the order
+        looked at.) }
+    function FillGaps(const ASamples: TWhisperSamples; var AResult: TWhisperTranscription;
+      AMinGapSeconds: Double = 3; AMinLevel: Single = 0.01; AMinVoiced: Single = 0.2): TWhisperGapArray;
     { Asks the run in progress to stop (any thread). It stops at the next
       check; the segments so far are kept and the result says Cancelled. }
     procedure Cancel;
@@ -296,8 +339,11 @@ type
       fills the tokens. The times come from DTW when the model was loaded
       with it (@link(TWhisperModel.DtwEnabled)), else from whisper.cpp's
       token time stamps, which are then turned on for the run (less
-      accurate). Not with Vad: whisper.cpp does not map token times back to
-      the original audio. }
+      accurate). With DTW the segments of the result then span their words
+      (whisper.cpp's own segment time stamps can be far out where it
+      skipped speech; OnSegment still reports them as they came). Not with
+      Vad: whisper.cpp does not map token times back to the original
+      audio. }
     property IncludeWords: Boolean read FIncludeWords write FIncludeWords;
     { Each new segment, on the thread of Execute. }
     property OnSegment: TWhisperSegmentEvent read FOnSegment write FOnSegment;
@@ -424,6 +470,54 @@ procedure WhisperSaveTextFile(const AFileName, AText: string);
   Gutenberg plain-text book for @code(WhisperSplitText).
   @raises(EFOpenError / EStreamError when the file cannot be read.) }
 function WhisperLoadTextFile(const AFileName: string): string;
+
+{ Appends APart (a run over a piece of a longer recording, e.g. one
+  chapter) to ATarget, moving its times by AOffsetSeconds: segment, token
+  and word times, segment indexes and the words' segment numbers continue
+  ATarget's. AudioSeconds and ElapsedMs add up; the language, word timing
+  and result code are taken from the first part, and a failed or cancelled
+  part marks the whole. }
+procedure WhisperAppendTranscription(var ATarget: TWhisperTranscription;
+  const APart: TWhisperTranscription; AOffsetSeconds: Double);
+
+type
+  { What @link(WhisperCleanTranscription) took out. }
+  TWhisperCleanStats = record
+    { Segments wholly inside a phrase repeated three or more times in a row
+      (the decoder looping). }
+    Loops: Integer;
+    { Segments made only of words of the initial prompt (a carried prompt
+      given back where the decoder heard nothing it could use). }
+    PromptEchoes: Integer;
+    { Words longer than @code(WHISPER_MAX_WORD_SECONDS), cut to one
+      second: DTW stretches the last word it has over speech the decoder
+      skipped. }
+    LongWords: Integer;
+  end;
+
+const
+  { A word longer than this (seconds) covers speech the decoder skipped. }
+  WHISPER_MAX_WORD_SECONDS = 4;
+
+{ Takes out of AResult what is not speech that was heard: segments wholly
+  inside a loop (a phrase of two or more words three or more times in a
+  row, nine or more words in all, across segments) and segments of nothing
+  but words of APrompt (the initial prompt, when one is carried), three or
+  more of them or stretched over 3 s; cuts words longer than
+  WHISPER_MAX_WORD_SECONDS to one second. Segments are renumbered and,
+  with DTW times (AResult.WordTiming = wwtDtw), span their words again.
+  What is taken out leaves a gap that @code(TWhisperRun.FillGaps)
+  transcribes again. }
+function WhisperCleanTranscription(var AResult: TWhisperTranscription;
+  const APrompt: string): TWhisperCleanStats;
+
+{ Puts APart (a run over a stretch of the same recording, e.g. a gap run
+  again) into ATarget in time order, its times moved by AOffsetSeconds:
+  its segments go before the first segment of ATarget that starts at or
+  after APart's first segment, its words likewise; segment indexes and the
+  words' segment numbers are renumbered. Nothing else of ATarget changes. }
+procedure WhisperInsertTranscription(var ATarget: TWhisperTranscription;
+  const APart: TWhisperTranscription; AOffsetSeconds: Double);
 
 implementation
 
@@ -567,6 +661,350 @@ begin
   finally
     S.Free;
   end;
+end;
+
+procedure WhisperAppendTranscription(var ATarget: TWhisperTranscription;
+  const APart: TWhisperTranscription; AOffsetSeconds: Double);
+var
+  Ofs: Int64;
+  NS, NW, I, J: Integer;
+  First: Boolean;
+begin
+  Ofs := Round(AOffsetSeconds * 100);   // 10 ms units
+  First := (Length(ATarget.Segments) = 0) and (Length(ATarget.Words) = 0) and
+    (ATarget.LanguageCode = '');
+  NS := Length(ATarget.Segments);
+  SetLength(ATarget.Segments, NS + Length(APart.Segments));
+  for I := 0 to High(APart.Segments) do
+  begin
+    ATarget.Segments[NS + I] := APart.Segments[I];
+    ATarget.Segments[NS + I].Tokens := Copy(APart.Segments[I].Tokens);
+    with ATarget.Segments[NS + I] do
+    begin
+      Index := NS + I;
+      Inc(T0, Ofs);
+      Inc(T1, Ofs);
+      for J := 0 to High(Tokens) do
+      begin
+        if Tokens[J].T0 >= 0 then
+          Inc(Tokens[J].T0, Ofs);
+        if Tokens[J].T1 >= 0 then
+          Inc(Tokens[J].T1, Ofs);
+        if Tokens[J].TDtw >= 0 then
+          Inc(Tokens[J].TDtw, Ofs);
+      end;
+    end;
+  end;
+  NW := Length(ATarget.Words);
+  SetLength(ATarget.Words, NW + Length(APart.Words));
+  for I := 0 to High(APart.Words) do
+  begin
+    ATarget.Words[NW + I] := APart.Words[I];
+    Inc(ATarget.Words[NW + I].T0, Ofs);
+    Inc(ATarget.Words[NW + I].T1, Ofs);
+    Inc(ATarget.Words[NW + I].Segment, NS);
+  end;
+  if First then
+  begin
+    ATarget.WordTiming := APart.WordTiming;
+    ATarget.LanguageCode := APart.LanguageCode;
+    ATarget.LanguageName := APart.LanguageName;
+    ATarget.ResultCode := APart.ResultCode;
+  end
+  else if (ATarget.ResultCode = 0) and (APart.ResultCode <> 0) then
+    ATarget.ResultCode := APart.ResultCode;
+  if APart.Cancelled then
+    ATarget.Cancelled := True;
+  if (ATarget.ErrorMessage = '') and (APart.ErrorMessage <> '') then
+    ATarget.ErrorMessage := APart.ErrorMessage;
+  ATarget.AudioSeconds := ATarget.AudioSeconds + APart.AudioSeconds;
+  ATarget.ElapsedMs := ATarget.ElapsedMs + APart.ElapsedMs;
+end;
+
+{ Lower-case letters and digits of AText (non-ASCII kept as is). }
+function PlainLetters(const AText: string): string;
+var
+  I: Integer;
+  C: Char;
+begin
+  Result := '';
+  for I := 1 to Length(AText) do
+  begin
+    C := AText[I];
+    if CharInSet(C, ['A'..'Z']) then
+      Result := Result + Chr(Ord(C) + 32)
+    else if CharInSet(C, ['a'..'z', '0'..'9']) or (Ord(C) > 127) then
+      Result := Result + C;
+  end;
+end;
+
+type
+  { One flag per word. }
+  TBooleanDynArray2 = array of Boolean;
+
+{ Marks the words of AWords that belong to a loop: a phrase of two or more
+  words repeated three or more times in a row, nine or more words in all
+  (across segment boundaries: the decoder often gives each repeat its own
+  segment). }
+function LoopMask(const AWords: TWhisperWordArray): TBooleanDynArray2;
+const
+  MIN_REPEATS = 3;
+  MIN_LOOP_WORDS = 9;
+  MAX_PHRASE = 40;
+var
+  N, I, K, Reps, Len, Best: Integer;
+  Norm: array of string;
+  Same: Boolean;
+begin
+  Len := Length(AWords);
+  Result := nil;
+  SetLength(Result, Len);
+  Norm := nil;
+  SetLength(Norm, Len);
+  for I := 0 to Len - 1 do
+    Norm[I] := PlainLetters(AWords[I].Text);
+  I := 0;
+  while I < Len do
+  begin
+    Best := 0;
+    for N := 2 to MAX_PHRASE do
+    begin
+      if I + N * MIN_REPEATS > Len then
+        Break;
+      Reps := 1;
+      while I + (Reps + 1) * N <= Len do
+      begin
+        Same := True;
+        for K := 0 to N - 1 do
+          if Norm[I + Reps * N + K] <> Norm[I + K] then
+          begin
+            Same := False;
+            Break;
+          end;
+        if not Same then
+          Break;
+        Inc(Reps);
+      end;
+      if (Reps >= MIN_REPEATS) and (Reps * N >= MIN_LOOP_WORDS) and (Reps * N > Best) then
+        Best := Reps * N;
+    end;
+    if Best > 0 then
+    begin
+      for K := I to I + Best - 1 do
+        Result[K] := True;
+      Inc(I, Best);
+    end
+    else
+      Inc(I);
+  end;
+end;
+
+function WhisperCleanTranscription(var AResult: TWhisperTranscription;
+  const APrompt: string): TWhisperCleanStats;
+var
+  PromptWords: TStringList;
+  Drop: array of Boolean;
+  First, Last: array of Integer;
+  Map: array of Integer;
+  Loop: TBooleanDynArray2;
+  I, S, N, K: Integer;
+  Echo: Boolean;
+  Segs: TWhisperSegmentArray;
+  Words: TWhisperWordArray;
+  Word: string;
+begin
+  Result := Default(TWhisperCleanStats);
+  N := Length(AResult.Segments);
+  if N = 0 then
+    Exit;
+  // the words of each segment
+  First := nil;
+  Last := nil;
+  SetLength(First, N);
+  SetLength(Last, N);
+  for S := 0 to N - 1 do
+  begin
+    First[S] := -1;
+    Last[S] := -2;
+  end;
+  for I := 0 to High(AResult.Words) do
+  begin
+    S := AResult.Words[I].Segment;
+    if (S < 0) or (S >= N) then
+      Continue;
+    if First[S] < 0 then
+      First[S] := I;
+    Last[S] := I;
+  end;
+  PromptWords := TStringList.Create;
+  try
+    PromptWords.Sorted := True;
+    PromptWords.Duplicates := dupIgnore;
+    Word := '';
+    for I := 1 to Length(APrompt) + 1 do
+      if (I <= Length(APrompt)) and not CharInSet(APrompt[I], [' ', ',', '.', ';', ':', '!', '?', '"']) then
+        Word := Word + APrompt[I]
+      else if Word <> '' then
+      begin
+        PromptWords.Add(PlainLetters(Word));
+        Word := '';
+      end;
+    Loop := LoopMask(AResult.Words);
+    Drop := nil;
+    SetLength(Drop, N);
+    for S := 0 to N - 1 do
+    begin
+      if First[S] < 0 then
+        Continue;
+      // a segment wholly inside a loop
+      Echo := True;
+      for I := First[S] to Last[S] do
+        if not Loop[I] then
+        begin
+          Echo := False;
+          Break;
+        end;
+      if Echo then
+      begin
+        Drop[S] := True;
+        Inc(Result.Loops);
+        Continue;
+      end;
+      if PromptWords.Count = 0 then
+        Continue;
+      // a segment of nothing but prompt words, three or more of them or
+      // stretched over 3 s ('Mudge!' alone is speech)
+      Echo := (Last[S] - First[S] + 1 >= 3) or
+        (AResult.Words[Last[S]].T1 - AResult.Words[First[S]].T0 >= 3 * WHISPER_TICKS_PER_SECOND);
+      if Echo then
+        for I := First[S] to Last[S] do
+          if PromptWords.IndexOf(PlainLetters(AResult.Words[I].Text)) < 0 then
+          begin
+            Echo := False;
+            Break;
+          end;
+      if Echo then
+      begin
+        Drop[S] := True;
+        Inc(Result.PromptEchoes);
+      end;
+    end;
+  finally
+    PromptWords.Free;
+  end;
+  // rebuild without the dropped segments
+  Map := nil;
+  SetLength(Map, N);
+  Segs := nil;
+  K := 0;
+  for S := 0 to N - 1 do
+    if Drop[S] then
+      Map[S] := -1
+    else
+    begin
+      SetLength(Segs, K + 1);
+      Segs[K] := AResult.Segments[S];
+      Segs[K].Index := K;
+      Map[S] := K;
+      Inc(K);
+    end;
+  Words := nil;
+  K := 0;
+  SetLength(Words, Length(AResult.Words));
+  for I := 0 to High(AResult.Words) do
+  begin
+    S := AResult.Words[I].Segment;
+    if (S >= 0) and (S < N) and (Map[S] < 0) then
+      Continue;
+    Words[K] := AResult.Words[I];
+    if (S >= 0) and (S < N) then
+      Words[K].Segment := Map[S];
+    if Words[K].T1 - Words[K].T0 > WHISPER_MAX_WORD_SECONDS * WHISPER_TICKS_PER_SECOND then
+    begin
+      Words[K].T1 := Words[K].T0 + WHISPER_TICKS_PER_SECOND;
+      Inc(Result.LongWords);
+    end;
+    Inc(K);
+  end;
+  SetLength(Words, K);
+  AResult.Segments := Segs;
+  AResult.Words := Words;
+  if AResult.WordTiming = wwtDtw then
+  begin
+    S := -1;
+    for I := 0 to High(AResult.Words) do
+    begin
+      K := AResult.Words[I].Segment;
+      if (K < 0) or (K > High(AResult.Segments)) then
+        Continue;
+      if K <> S then
+      begin
+        AResult.Segments[K].T0 := AResult.Words[I].T0;
+        S := K;
+      end;
+      AResult.Segments[K].T1 := AResult.Words[I].T1;
+    end;
+  end;
+end;
+
+procedure WhisperInsertTranscription(var ATarget: TWhisperTranscription;
+  const APart: TWhisperTranscription; AOffsetSeconds: Double);
+var
+  Tmp: TWhisperTranscription;
+  Ofs, Start: Int64;
+  PS, PW, NS, NW, I: Integer;
+  Segs: TWhisperSegmentArray;
+  Words: TWhisperWordArray;
+begin
+  if Length(APart.Segments) = 0 then
+    Exit;
+  // the part on its own, times moved (append to an empty one)
+  Tmp := Default(TWhisperTranscription);
+  WhisperAppendTranscription(Tmp, APart, AOffsetSeconds);
+  Ofs := Tmp.Segments[0].T0;
+  PS := 0;
+  while (PS <= High(ATarget.Segments)) and (ATarget.Segments[PS].T0 < Ofs) do
+    Inc(PS);
+  if Length(Tmp.Words) > 0 then
+    Start := Tmp.Words[0].T0
+  else
+    Start := Ofs;
+  PW := 0;
+  while (PW <= High(ATarget.Words)) and (ATarget.Words[PW].T0 < Start) do
+    Inc(PW);
+  NS := Length(Tmp.Segments);
+  NW := Length(Tmp.Words);
+  Segs := nil;
+  SetLength(Segs, Length(ATarget.Segments) + NS);
+  for I := 0 to PS - 1 do
+    Segs[I] := ATarget.Segments[I];
+  for I := 0 to NS - 1 do
+  begin
+    Segs[PS + I] := Tmp.Segments[I];
+    Segs[PS + I].Index := PS + I;
+  end;
+  for I := PS to High(ATarget.Segments) do
+  begin
+    Segs[I + NS] := ATarget.Segments[I];
+    Segs[I + NS].Index := I + NS;
+  end;
+  Words := nil;
+  SetLength(Words, Length(ATarget.Words) + NW);
+  for I := 0 to PW - 1 do
+    Words[I] := ATarget.Words[I];
+  for I := 0 to NW - 1 do
+  begin
+    Words[PW + I] := Tmp.Words[I];
+    Inc(Words[PW + I].Segment, PS);
+  end;
+  for I := PW to High(ATarget.Words) do
+  begin
+    Words[I + NW] := ATarget.Words[I];
+    if Words[I + NW].Segment >= PS then
+      Inc(Words[I + NW].Segment, NS);
+  end;
+  ATarget.Segments := Segs;
+  ATarget.Words := Words;
 end;
 
 function WhisperLoadTextFile(const AFileName: string): string;
@@ -767,6 +1205,185 @@ begin
   FParams := AParams;
 end;
 
+function TWhisperRun.FillGaps(const ASamples: TWhisperSamples; var AResult: TWhisperTranscription;
+  AMinGapSeconds: Double; AMinLevel: Single; AMinVoiced: Single): TWhisperGapArray;
+const
+  { Samples per level frame (20 ms). }
+  FRAME = WHISPER_SAMPLE_RATE div 50;
+  { Shortest stretch run again, samples (whisper.cpp pads to 30 s anyway). }
+  MIN_SAMPLES = WHISPER_SAMPLE_RATE div 2;
+  { Rounds: a stretch the pass only partly filled leaves a shorter one,
+    which the next round tries again (whisper.cpp can skip the start of
+    the stretch, too). }
+  MAX_ROUNDS = 3;
+  { Temperature of the retry of a stretch that gave nothing usable. }
+  RETRY_TEMPERATURE = 0.2;
+var
+  Edges: array of Int64;   // pairs: end of an item, start of the next
+  N, I, K, F, Frames, Loud, S0, S1, G, Round_, Added: Integer;
+  Total: Int64;
+  Sum: Double;
+  Sub: TWhisperSamples;
+  Part, Kept: TWhisperTranscription;
+  SaveSeg: TWhisperSegmentEvent;
+  SaveProg: TWhisperProgressEvent;
+  Prompt, SavePrompt: string;
+  SaveCarry: Boolean;
+  SaveTemp: Single;
+  Gap: TWhisperGap;
+  UseWords, Tried: Boolean;
+
+  // Runs ASub; APart gets the raw result, the result is what is kept: no
+  // loops, no prompt echoes, no segment that is only the prompt.
+  function RunStretch(const ASub: TWhisperSamples; out APart: TWhisperTranscription): TWhisperTranscription;
+  var
+    J, M: Integer;
+    Txt: string;
+  begin
+    APart := Execute(ASub);
+    WhisperCleanTranscription(APart, FParams.InitialPrompt);
+    Result := APart;
+    Result.Segments := nil;
+    Result.Words := nil;
+    for J := 0 to High(APart.Segments) do
+    begin
+      Txt := PlainLetters(APart.Segments[J].Text);
+      if (Txt = '') or ((Prompt <> '') and (Pos(Txt, Prompt) > 0)) then
+        Continue;
+      SetLength(Result.Segments, Length(Result.Segments) + 1);
+      Result.Segments[High(Result.Segments)] := APart.Segments[J];
+      for M := 0 to High(APart.Words) do
+        if APart.Words[M].Segment = J then
+        begin
+          SetLength(Result.Words, Length(Result.Words) + 1);
+          Result.Words[High(Result.Words)] := APart.Words[M];
+          Result.Words[High(Result.Words)].Segment := High(Result.Segments);
+        end;
+    end;
+  end;
+
+begin
+  Result := nil;
+  Total := Round(Length(ASamples) / WHISPER_SAMPLE_RATE * WHISPER_TICKS_PER_SECOND);
+  Prompt := PlainLetters(FParams.InitialPrompt);
+  SaveSeg := FOnSegment;
+  SaveProg := FOnProgress;
+  FOnSegment := nil;
+  FOnProgress := nil;
+  try
+    for Round_ := 1 to MAX_ROUNDS do
+    begin
+      UseWords := Length(AResult.Words) > 0;
+      if UseWords then
+        N := Length(AResult.Words)
+      else
+        N := Length(AResult.Segments);
+      // stretches: before the first item, between items, after the last
+      Edges := nil;
+      SetLength(Edges, 2 * (N + 1));
+      Edges[0] := 0;
+      for I := 0 to N - 1 do
+        if UseWords then
+        begin
+          Edges[2 * I + 1] := AResult.Words[I].T0;
+          Edges[2 * I + 2] := AResult.Words[I].T1;
+        end
+        else
+        begin
+          Edges[2 * I + 1] := AResult.Segments[I].T0;
+          Edges[2 * I + 2] := AResult.Segments[I].T1;
+        end;
+      Edges[2 * N + 1] := Total;
+      Added := 0;
+      for G := 0 to N do
+      begin
+        Gap := Default(TWhisperGap);
+        Gap.T0 := Edges[2 * G];
+        Gap.T1 := Edges[2 * G + 1];
+        if (Gap.T1 - Gap.T0) < Round(AMinGapSeconds * WHISPER_TICKS_PER_SECOND) then
+          Continue;
+        // each stretch once
+        Tried := False;
+        for K := 0 to High(Result) do
+          if (Result[K].T0 = Gap.T0) and (Result[K].T1 = Gap.T1) then
+          begin
+            Tried := True;
+            Break;
+          end;
+        if Tried then
+          Continue;
+        S0 := Round(Gap.T0 * WHISPER_SAMPLE_RATE / WHISPER_TICKS_PER_SECOND);
+        S1 := Round(Gap.T1 * WHISPER_SAMPLE_RATE / WHISPER_TICKS_PER_SECOND);
+        if S0 < 0 then
+          S0 := 0;
+        if S1 > Length(ASamples) then
+          S1 := Length(ASamples);
+        if S1 - S0 < MIN_SAMPLES then
+          Continue;
+        // sound level
+        Frames := (S1 - S0) div FRAME;
+        Loud := 0;
+        for F := 0 to Frames - 1 do
+        begin
+          Sum := 0;
+          for K := S0 + F * FRAME to S0 + (F + 1) * FRAME - 1 do
+            Sum := Sum + Sqr(ASamples[K]);
+          if Sqrt(Sum / FRAME) >= AMinLevel then
+            Inc(Loud);
+        end;
+        if Frames > 0 then
+          Gap.Voiced := Loud / Frames;
+        if Gap.Voiced >= AMinVoiced then
+        begin
+          Gap.Transcribed := True;
+          Sub := Copy(ASamples, S0, S1 - S0);
+          Kept := RunStretch(Sub, Part);
+          if (Length(Kept.Words) = 0) and (Part.ResultCode = 0) and not Part.Cancelled and
+            ((FParams.InitialPrompt <> '') or (FParams.Temperature < RETRY_TEMPERATURE)) then
+          begin
+            // the decoder looped or gave the prompt back on this stretch
+            // again: once more without the prompt and a little randomness
+            Gap.Retried := True;
+            SavePrompt := FParams.InitialPrompt;
+            SaveCarry := FParams.CarryInitialPrompt;
+            SaveTemp := FParams.Temperature;
+            try
+              FParams.InitialPrompt := '';
+              FParams.CarryInitialPrompt := False;
+              if FParams.Temperature < RETRY_TEMPERATURE then
+                FParams.Temperature := RETRY_TEMPERATURE;
+              AResult.ElapsedMs := AResult.ElapsedMs + Part.ElapsedMs;
+              Kept := RunStretch(Sub, Part);
+            finally
+              FParams.InitialPrompt := SavePrompt;
+              FParams.CarryInitialPrompt := SaveCarry;
+              FParams.Temperature := SaveTemp;
+            end;
+          end;
+          Gap.Words := Length(Kept.Words);
+          if (Part.ResultCode = 0) and not Part.Cancelled and (Length(Kept.Segments) > 0) then
+          begin
+            WhisperInsertTranscription(AResult, Kept, S0 / WHISPER_SAMPLE_RATE);
+            Inc(Added, Gap.Words);
+          end
+          else
+            Gap.Words := 0;
+          AResult.ElapsedMs := AResult.ElapsedMs + Part.ElapsedMs;
+        end;
+        SetLength(Result, Length(Result) + 1);
+        Result[High(Result)] := Gap;
+        if FCancel then
+          Exit;
+      end;
+      if Added = 0 then
+        Break;
+    end;
+  finally
+    FOnSegment := SaveSeg;
+    FOnProgress := SaveProg;
+  end;
+end;
+
 procedure TWhisperRun.Cancel;
 begin
   FCancel := True;
@@ -855,6 +1472,9 @@ var
   Start: TDateTime;
   LangId: Integer;
   Timing: TWhisperWordTiming;
+  PromptTokens: Int32;
+  I, K, SegFirst: Integer;
+  PromptBuf: array of TWhisperToken;
 begin
   if Length(ASamples) = 0 then
     raise EWhisperError.Create('No audio to transcribe');
@@ -887,6 +1507,21 @@ begin
     else
       FEot := High(TWhisperToken);
     P := FParams.Build(FModel.IsMultilingual);
+    if (P.n_max_text_ctx = 0) and P.carry_initial_prompt and (P.initial_prompt <> nil) then
+    begin
+      // whisper.cpp uses no prompt at all when n_max_text_ctx is 0, so a
+      // carried prompt gets exactly its own room: the prompt plus the
+      // previous-text marker, none for the text before.
+      // A buffer as long as the prompt's bytes always holds its tokens
+      // (whisper_token_count would log an error for its own probe).
+      SetLength(PromptBuf, Length(UTF8String(FParams.InitialPrompt)) + 1);
+      if Assigned(F.whisper_tokenize) then
+        PromptTokens := F.whisper_tokenize(Ctx, P.initial_prompt, @PromptBuf[0], Length(PromptBuf))
+      else
+        PromptTokens := 0;
+      if PromptTokens > 0 then
+        P.n_max_text_ctx := PromptTokens + 1;
+    end;
     if Timing = wwtTokenTimestamps then
       P.token_timestamps := True;
     P.new_segment_callback := NewSegmentTrampoline;
@@ -934,6 +1569,25 @@ begin
     Result.WordTiming := Timing;
     if Timing <> wwtNone then
       Result.Words := WhisperBuildWords(Result.Segments, Result.LanguageCode, Timing);
+    // DTW word times are better than whisper.cpp's segment time stamps,
+    // which can be far out where it skipped speech: segments span their
+    // words.
+    if Timing = wwtDtw then
+    begin
+      SegFirst := -1;
+      for I := 0 to High(Result.Words) do
+      begin
+        K := Result.Words[I].Segment;
+        if (K < 0) or (K > High(Result.Segments)) then
+          Continue;
+        if K <> SegFirst then
+        begin
+          Result.Segments[K].T0 := Result.Words[I].T0;
+          SegFirst := K;
+        end;
+        Result.Segments[K].T1 := Result.Words[I].T1;
+      end;
+    end;
   finally
     FRunning := False;
     FModel.Unlock;

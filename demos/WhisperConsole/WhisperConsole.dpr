@@ -3,9 +3,10 @@
   TWhisperRun directly).
 
   Usage:
-    WhisperConsole <model.bin> <audio.wav> [language] [--translate] [--device NAME] [--tokens]
+    WhisperConsole <model.bin> <audio> [language] [--translate] [--device NAME] [--tokens]
                    [--words] [--labels FILE] [--json FILE] [--no-dtw] [--no-flash] [--no-context]
                    [--prompt TEXT] [--carry-prompt] [--align BOOK.txt] [--align-labels FILE]
+                   [--chapters] [--ffmpeg FOLDER] [--no-fill-gaps]
     WhisperConsole --check            (library + layout check, device list)
     WhisperConsole --bench <model.bin> <audio.wav> [language] [--seconds N|all]
                    [--devices CUDA0,Vulkan0] [--runs N] [--threads N] [--also <model2.bin>]...
@@ -18,7 +19,7 @@
   --words: word timings - the model is loaded with DTW (alignment heads from
            the model file, flash attention off) and the words are printed.
   --labels FILE: write the words as an Audacity label track (implies --words):
-           in Audacity, File > Import > Labels over the audio, to check by ear.
+           in Audacity (3: File > Import > Labels; 4: File > Import), to check by ear.
   --json FILE: write segments and words as JSON (implies --words).
   --no-dtw: word times from whisper.cpp's token time stamps instead of DTW
            (to compare the two).
@@ -33,10 +34,28 @@
            it keeps the punctuation the windows would otherwise lose).
   --align BOOK.txt: align the words with the text of record (a UTF-8 plain
            text, e.g. a Project Gutenberg .txt; implies --words) and report
-           the stretches not spoken and those not heard clearly.
+           the stretches not spoken, not heard clearly (interpolated) and not heard
+           at all (the transcript is silent there: check by ear).
   --align-labels FILE: Audacity labels of the BOOK's words with their times
            (interpolated ones marked '?') and a label at every stretch not
            spoken - to check them by ear (proof-listening).
+  <audio>: a file, a folder (every audio file in it, in natural order:
+           chapter2 before chapter10) or a playlist (.m3u, .m3u8, .txt).
+           .wav files are read directly; anything else (.m4b, .m4a, .mp3,
+           .flac, .ogg, .opus, ...) through FFmpeg's shared libraries.
+           Several files are transcribed one at a time on one joined time
+           line; --json then lists the parts (file, title, offset) and
+           --labels writes one label track per file (NAME-01.txt, ...).
+  --chapters: also split files with chapters (an M4B) into their chapters:
+           one chapter in memory at a time.
+  --ffmpeg FOLDER: where FFmpeg's libraries are (default: next to the
+           executable, the system search path, then whisper.dll's folder).
+  --no-fill-gaps: skip the second pass. By default segments that loop
+           (a phrase three times or more) or only repeat the prompt are
+           taken out and words stretched over 4 s cut, then every stretch
+           of 3 s or more without words that has sound in it (whisper.cpp
+           sometimes ends a 30 s window early and skips the rest) is
+           transcribed again and put in place; each one is logged.
   An argument starting with '-' that is not an option above is an error (it
   used to be taken as the language).
 
@@ -62,7 +81,9 @@ uses
   Whisper.Audio,
   Whisper.Words,
   Whisper.Align,
-  Whisper.Core;
+  Whisper.FFmpeg,
+  Whisper.Core,
+  Whisper.AudioSet;
 
 type
   { Event handlers of the run and the library log. }
@@ -70,6 +91,9 @@ type
   public
     { Print the tokens of each segment (--tokens). }
     ShowTokens: Boolean;
+    { Added to printed segment times (10 ms units): the start of the
+      chapter being transcribed. }
+    Offset: Int64;
     { Prints a segment as it arrives. }
     procedure Segment(Sender: TObject; const ASegment: TWhisperSegment);
     { Prints the progress in steps. }
@@ -89,6 +113,12 @@ const
   ALIGN_REPORT_MIN_WORDS = 3;
   { Most book words quoted per reported stretch. }
   ALIGN_QUOTE_WORDS = 12;
+  { The delivery this console comes from (zip number): printed first, so a
+    log shows which build made it. Bumped with every zip that changes the
+    library or the console. }
+  CONSOLE_DELIVERY = 10;
+  { Learned habits listed by --align. }
+  ALIGN_LEARNED_SHOWN = 20;
   { Marks an interpolated book word in the --align-labels file. }
   INTERPOLATED_MARK = ' ?';
 
@@ -107,10 +137,21 @@ var
 begin
   Book := WhisperSplitText(WhisperLoadTextFile(ABookFile));
   Aligned := WhisperAlignText(Book, R.Words, Stats);
-  WriteLn(Format('Aligned with %s: %d book words - %d exact, %d similar, %d interpolated, %d not spoken ' +
-    '(reading speed %.2f words/s, %d anchors, %d pass(es), %d stray match(es) dropped)',
+  WriteLn(Format('Aligned with %s: %d book words - %d exact, %d similar, %d interpolated, %d not spoken, ' +
+    '%d not heard (reading speed %.2f words/s, %d anchors, %d pass(es), %d stray match(es) dropped)',
     [ABookFile, Stats.BookWords, Stats.Exact, Stats.Similar, Stats.Interpolated, Stats.NotSpoken,
-     Stats.WordsPerSecond, Stats.Anchors, Stats.Passes, Stats.Isolated]));
+     Stats.NotHeard, Stats.WordsPerSecond, Stats.Anchors, Stats.Passes, Stats.Isolated]));
+  if Length(Stats.Learned) > 0 then
+  begin
+    Quote := '';
+    for I := 0 to High(Stats.Learned) do
+      if I < ALIGN_LEARNED_SHOWN then
+        Quote := Quote + IfThen(I > 0, ', ', '') + Stats.Learned[I];
+    if Length(Stats.Learned) > ALIGN_LEARNED_SHOWN then
+      Quote := Quote + ', ...';
+    WriteLn(Format('  learned %d habit(s) of the recogniser (book=heard), %d word(s) paired through them: %s',
+      [Length(Stats.Learned), Stats.LearnedWords, Quote]));
+  end;
   Regions := WhisperAlignRegions(Aligned, ALIGN_REPORT_MIN_WORDS);
   for I := 0 to High(Regions) do
   begin
@@ -136,7 +177,7 @@ begin
     if Aligned[I].T0 >= 0 then
     begin
       Labels[N].Text := Book[I];
-      if Aligned[I].Match = wamInterpolated then
+      if Aligned[I].Match in [wamInterpolated, wamNotHeard] then
         Labels[N].Text := Labels[N].Text + INTERPOLATED_MARK;
       Labels[N].T0 := Aligned[I].T0;
       Labels[N].T1 := Aligned[I].T1;
@@ -149,18 +190,136 @@ begin
       Labels[N].T0 := Regions[I].Time;
       Labels[N].T1 := Regions[I].Time;
       Inc(N);
+    end
+    else if Regions[I].Match = wamNotHeard then
+    begin
+      Labels[N].Text := Format('NOT HEARD (check by ear): book words %d-%d', [Regions[I].First,
+        Regions[I].Last]);
+      Labels[N].T0 := Regions[I].Time;
+      Labels[N].T1 := Regions[I].Time;
+      Inc(N);
     end;
   SetLength(Labels, N);
   WhisperSaveTextFile(ALabelsFile, WhisperWordsToLabels(Labels));
   WriteLn('Book word labels written to ', ALabelsFile);
 end;
 
+{ Loads FFmpeg from AFolder; with AFolder = '' from the executable's folder
+  or the system search path, then from whisper.dll's folder AFallback. }
+function OpenFFmpeg(const AFolder, AFallback: string): TWhisperFFmpeg;
+var
+  First: string;
+begin
+  if AFolder <> '' then
+    Exit(TWhisperFFmpeg.Create(AFolder));
+  try
+    Result := TWhisperFFmpeg.Create('');
+  except
+    on E: EWhisperError do
+    begin
+      if AFallback = '' then
+        raise;
+      First := E.Message;
+      try
+        Result := TWhisperFFmpeg.Create(AFallback);
+      except
+        on E2: EWhisperError do
+          raise EWhisperError.Create(First + sLineBreak + E2.Message);
+      end;
+    end;
+  end;
+end;
+
+{ Takes out loops, prompt echoes and stretched words, runs the second pass
+  over the gaps of AResult (ASamples, which start at AOffset s of the
+  file) and logs what it did. }
+procedure FillAndReport(ARun: TWhisperRun; const ASamples: TWhisperSamples;
+  var AResult: TWhisperTranscription; AOffset: Double; const APrompt: string);
+var
+  Gaps: TWhisperGapArray;
+  Clean: TWhisperCleanStats;
+  I, Again, Added: Integer;
+  Ofs: Int64;
+begin
+  Clean := WhisperCleanTranscription(AResult, APrompt);
+  if Clean.Loops + Clean.PromptEchoes + Clean.LongWords > 0 then
+    WriteLn(Format('Cleaned: %d looping segment(s), %d prompt echo(es) taken out, %d stretched word(s) cut',
+      [Clean.Loops, Clean.PromptEchoes, Clean.LongWords]));
+  Gaps := ARun.FillGaps(ASamples, AResult);
+  Ofs := Round(AOffset * WHISPER_TICKS_PER_SECOND);
+  Again := 0;
+  Added := 0;
+  for I := 0 to High(Gaps) do
+    if Gaps[I].Transcribed then
+    begin
+      Inc(Again);
+      Inc(Added, Gaps[I].Words);
+      WriteLn(Format('  gap %s --> %s (%.1f s, %.0f%% sound): %d word(s) found%s', [WhisperTimeToStr(Gaps[I].T0 + Ofs),
+        WhisperTimeToStr(Gaps[I].T1 + Ofs), (Gaps[I].T1 - Gaps[I].T0) / WHISPER_TICKS_PER_SECOND,
+        Gaps[I].Voiced * 100, Gaps[I].Words, IfThen(Gaps[I].Retried, ' (tried again without the prompt)', '')]));
+    end;
+  WriteLn(Format('Second pass: %d gap(s) of 3 s or more, %d with sound transcribed again, %d word(s) added',
+    [Length(Gaps), Again, Added]));
+end;
+
+{ AJson (WhisperWordsToJson) with the parts of the recording added as
+  "parts" (file, title, start and end in the file, offset on the joined
+  time line of the words). }
+function JsonWithParts(const AJson: string; const AParts: TWhisperAudioPartArray): string;
+var
+  P: Integer;
+begin
+  P := LastDelimiter('}', AJson);
+  Result := TrimRight(Copy(AJson, 1, P - 1)) + ',' + sLineBreak + '  "parts": ' +
+    WhisperAudioPartsToJson(AParts) + sLineBreak + Copy(AJson, P, MaxInt);
+end;
+
+{ Writes an Audacity label track per audio file (ABase-01.txt, ...), the
+  words' times moved from the joined time line to that file's. }
+procedure WriteFileLabels(const ABase: string; ASet: TWhisperAudioSet; const AWords: TWhisperWordArray);
+var
+  F, I, P, N: Integer;
+  Own: TWhisperWordArray;
+  Shift: Int64;
+  Name: string;
+begin
+  for F := 0 to ASet.Files.Count - 1 do
+  begin
+    Own := nil;
+    N := 0;
+    for I := 0 to High(AWords) do
+    begin
+      // the part the word starts in
+      P := High(ASet.Parts);
+      while (P > 0) and (AWords[I].T0 < Round(ASet.Parts[P].Offset * WHISPER_TICKS_PER_SECOND)) do
+        Dec(P);
+      if ASet.Parts[P].FileName <> ASet.Files[F] then
+        Continue;
+      Shift := Round((ASet.Parts[P].Start - ASet.Parts[P].Offset) * WHISPER_TICKS_PER_SECOND);
+      SetLength(Own, N + 1);
+      Own[N] := AWords[I];
+      Inc(Own[N].T0, Shift);
+      Inc(Own[N].T1, Shift);
+      Inc(N);
+    end;
+    Name := ChangeFileExt(ABase, '') + Format('-%.2d', [F + 1]) + ExtractFileExt(ABase);
+    WhisperSaveTextFile(Name, WhisperWordsToLabels(Own));
+    WriteLn(Format('Audacity labels of %s written to %s', [ExtractFileName(ASet.Files[F]), Name]));
+  end;
+end;
+
+{ True when AFileName is read without FFmpeg. }
+function IsWav(const AFileName: string): Boolean;
+begin
+  Result := SameText(ExtractFileExt(AFileName), '.wav');
+end;
+
 procedure TConsoleHandler.Segment(Sender: TObject; const ASegment: TWhisperSegment);
 var
   I: Integer;
 begin
-  WriteLn(Format('[%s --> %s] %s', [WhisperTimeToStr(ASegment.T0), WhisperTimeToStr(ASegment.T1),
-    Trim(ASegment.Text)]));
+  WriteLn(Format('[%s --> %s] %s', [WhisperTimeToStr(ASegment.T0 + Offset),
+    WhisperTimeToStr(ASegment.T1 + Offset), Trim(ASegment.Text)]));
   if ShowTokens then
     for I := 0 to High(ASegment.Tokens) do
       if not ASegment.Tokens[I].Special then
@@ -172,13 +331,23 @@ end;
 procedure TConsoleHandler.Progress(Sender: TObject; AProgress: Integer);
 begin
   if AProgress mod PROGRESS_STEP = 0 then
+  begin
+    // both streams are buffered when redirected: flush them so a log of
+    // both keeps the order
+    Flush(Output);
     WriteLn(ErrOutput, Format('progress %d%%', [AProgress]));
+    Flush(ErrOutput);
+  end;
 end;
 
 procedure TConsoleHandler.Log(Sender: TObject; ALevel: TWhisperLogLevel; const AText: string);
 begin
   if ALevel in [wllWarn, wllError] then
+  begin
+    Flush(Output);
     WriteLn(ErrOutput, 'whisper: ' + AText);
+    Flush(ErrOutput);
+  end;
 end;
 
 procedure TConsoleHandler.BenchDevice(Sender: TObject; const AModelFile: string;
@@ -226,8 +395,17 @@ var
   ExtraModels: TStringList;
   ReadStart: TDateTime;
   I: Integer;
+  FFmpegFolder: string;
+  ByChapter, FillGaps: Boolean;
+  FF: TWhisperFFmpeg;
+  AudioIn: TWhisperAudioSet;
+  AudioFiles: TStringList;
+  NeedFF: Boolean;
+  PartTitle: string;
+  Part: TWhisperTranscription;
 begin
   ExitCode := 1;
+  WriteLn(Format('WhisperConsole, TWhisper delivery %d', [CONSOLE_DELIVERY]));
   ExtraModels := nil;
   Handler := TConsoleHandler.Create;
   try
@@ -252,6 +430,12 @@ begin
       Threads := 0;
       Runs := 1;
       ExtraModels := TStringList.Create;
+      FFmpegFolder := '';
+      ByChapter := False;
+      FillGaps := True;
+      FF := nil;
+      AudioIn := nil;
+      AudioFiles := nil;
       ModelFile := '';
       AudioFile := '';
       Lang := WHISPER_LANGUAGE_AUTO;
@@ -311,6 +495,15 @@ begin
           NoContext := True
         else if Arg = '--carry-prompt' then
           CarryPrompt := True
+        else if Arg = '--chapters' then
+          ByChapter := True
+        else if Arg = '--no-fill-gaps' then
+          FillGaps := False
+        else if (Arg = '--ffmpeg') and (I <= ParamCount) then
+        begin
+          FFmpegFolder := ParamStr(I);
+          Inc(I);
+        end
         else if (Arg = '--prompt') and (I <= ParamCount) then
         begin
           Prompt := ParamStr(I);
@@ -353,9 +546,10 @@ begin
       end;
       if not CheckOnly and ((ModelFile = '') or (AudioFile = '')) then
       begin
-        WriteLn('Usage: WhisperConsole <model.bin> <audio.wav> [language] [--translate] [--device NAME] [--tokens]');
+        WriteLn('Usage: WhisperConsole <model.bin> <audio> [language] [--translate] [--device NAME] [--tokens]');
         WriteLn('                      [--words] [--labels FILE] [--json FILE] [--no-dtw] [--no-flash] [--no-context]');
         WriteLn('                      [--prompt TEXT] [--carry-prompt] [--align BOOK.txt] [--align-labels FILE]');
+        WriteLn('                      [--chapters] [--ffmpeg FOLDER] [--no-fill-gaps]');
         WriteLn('       WhisperConsole --check');
         WriteLn('       WhisperConsole --bench <model.bin> <audio.wav> [language] [--seconds N|all] [--devices A,B]');
         WriteLn('                      [--runs N] [--threads N] [--also <model2.bin>]...');
@@ -383,14 +577,50 @@ begin
         WriteLn(Format('  %s  (whisper gpu_device %d)', [WhisperDeviceText(Devs[I]), Devs[I].GpuIndex]));
       if not LayoutOk then
         Exit;
+      if not CheckOnly then
+      begin
+        // a file, a folder of files or a playlist
+        AudioFiles := WhisperListAudioFiles(AudioFile);
+        NeedFF := ByChapter or (FFmpegFolder <> '');
+        for I := 0 to AudioFiles.Count - 1 do
+          if not IsWav(AudioFiles[I]) then
+            NeedFF := True;
+        if NeedFF or (AudioFiles.Count > 1) then
+        begin
+          if NeedFF then
+          begin
+            FF := OpenFFmpeg(FFmpegFolder, Lib.LibraryFolder);
+            WriteLn(FF.Description);
+          end;
+          // one part per file, or per chapter of a file with --chapters
+          AudioIn := TWhisperAudioSet.Create(FF, AudioFiles, ByChapter);
+          WriteLn(Format('Audio %s: %d file(s), %d part(s), about %.2f s', [AudioFile, AudioFiles.Count,
+            Length(AudioIn.Parts), AudioIn.Parts[High(AudioIn.Parts)].Offset +
+            AudioIn.Parts[High(AudioIn.Parts)].Duration]));
+          for I := 0 to High(AudioIn.Parts) do
+            WriteLn(Format('  part %d  %s --> %s  %s  (%s)', [I + 1,
+              WhisperTimeToStr(Round(AudioIn.Parts[I].Offset * 100)),
+              WhisperTimeToStr(Round((AudioIn.Parts[I].Offset + AudioIn.Parts[I].Duration) * 100)),
+              AudioIn.Parts[I].Title, ExtractFileName(AudioIn.Parts[I].FileName)]));
+        end;
+      end;
       if Bench then
       begin
         Lib.AddLogListener(Handler.Log);
         ReadStart := Now;
-        Samples := WhisperLoadWav(AudioFile, Info);
-        WriteLn(Format('Audio %s: %d channel(s), %d Hz, %d bits -> %d samples at %d Hz, read in %d ms',
-          [AudioFile, Info.Channels, Info.SampleRate, Info.BitsPerSample, Length(Samples), WHISPER_SAMPLE_RATE,
-           MilliSecondsBetween(Now, ReadStart)]));
+        if AudioIn <> nil then
+        begin
+          Samples := AudioIn.Read(0);
+          WriteLn(Format('Audio %s, part 1: %d samples at %d Hz, decoded in %d ms', [AudioFile, Length(Samples),
+            WHISPER_SAMPLE_RATE, MilliSecondsBetween(Now, ReadStart)]));
+        end
+        else
+        begin
+          Samples := WhisperLoadWav(AudioFiles[0], Info);
+          WriteLn(Format('Audio %s: %d channel(s), %d Hz, %d bits -> %d samples at %d Hz, read in %d ms',
+            [AudioFile, Info.Channels, Info.SampleRate, Info.BitsPerSample, Length(Samples), WHISPER_SAMPLE_RATE,
+             MilliSecondsBetween(Now, ReadStart)]));
+        end;
         Benchmark := TWhisperBenchmark.Create(ModelFile, Samples);
         Params := TWhisperParams.Create;
         try
@@ -468,11 +698,16 @@ begin
       try
         WriteLn(Format('Model %s on %s: %s', [ModelFile, IfThen(DeviceName = '', 'the default device',
           DeviceName), Model.Description]));
-        ReadStart := Now;
-        Samples := WhisperLoadWav(AudioFile, Info);
-        WriteLn(Format('Audio %s: %d channel(s), %d Hz, %d bits, %d frames -> %d samples (%.2f s), read in %d ms',
-          [AudioFile, Info.Channels, Info.SampleRate, Info.BitsPerSample, Info.Frames,
-           Length(Samples), WhisperSamplesSeconds(Samples), MilliSecondsBetween(Now, ReadStart)]));
+        Samples := nil;
+        if AudioIn = nil then
+        begin
+          // one WAV file: read directly
+          ReadStart := Now;
+          Samples := WhisperLoadWav(AudioFiles[0], Info);
+          WriteLn(Format('Audio %s: %d channel(s), %d Hz, %d bits, %d frames -> %d samples (%.2f s), read in %d ms',
+            [AudioFiles[0], Info.Channels, Info.SampleRate, Info.BitsPerSample, Info.Frames,
+             Length(Samples), WhisperSamplesSeconds(Samples), MilliSecondsBetween(Now, ReadStart)]));
+        end;
         Params := TWhisperParams.Create;
         Run := TWhisperRun.Create(Model, Params);
         try
@@ -494,8 +729,42 @@ begin
           WriteLn(Format('Transcribing: language %s, %d threads, %s, flash attention %s, ' +
             'previous text as context %s', [Params.Language, Params.Threads,
             IfThen(Translate, 'translate to English', 'transcribe'), BoolToStr(CP.flash_attn, True),
-            BoolToStr(Params.MaxTextContext > 0, True)]));
-          R := Run.Execute(Samples);
+            BoolToStr(Params.MaxTextContext > 0, True) +
+            IfThen((Params.MaxTextContext = 0) and CarryPrompt and (Prompt <> ''), ', initial prompt in every window', '')]));
+          if AudioIn <> nil then
+          begin
+            // part by part, on the joined time line
+            R := Default(TWhisperTranscription);
+            for I := 0 to High(AudioIn.Parts) do
+            begin
+              PartTitle := AudioIn.Parts[I].Title;
+              ReadStart := Now;
+              Samples := AudioIn.Read(I);
+              WriteLn(Format('Part %d of %d "%s" (%s at %s): %.2f s decoded in %d ms', [I + 1,
+                Length(AudioIn.Parts), PartTitle, ExtractFileName(AudioIn.Parts[I].FileName),
+                WhisperTimeToStr(Round(AudioIn.Parts[I].Offset * 100)), WhisperSamplesSeconds(Samples),
+                MilliSecondsBetween(Now, ReadStart)]));
+              if Length(Samples) = 0 then
+                Continue;
+              Handler.Offset := Round(AudioIn.Parts[I].Offset * 100);
+              Part := Run.Execute(Samples);
+              if FillGaps and (Part.ResultCode = 0) and not Part.Cancelled then
+                FillAndReport(Run, Samples, Part, AudioIn.Parts[I].Offset, Prompt);
+              WhisperAppendTranscription(R, Part, AudioIn.Parts[I].Offset);
+              // Keep the language the first chapter was heard in.
+              if SameText(Params.Language, WHISPER_LANGUAGE_AUTO) and (Part.LanguageCode <> '') then
+                Params.Language := Part.LanguageCode;
+              if (Part.ResultCode <> 0) or Part.Cancelled then
+                Break;
+            end;
+            Handler.Offset := 0;
+          end
+          else
+          begin
+            R := Run.Execute(Samples);
+            if FillGaps and (R.ResultCode = 0) and not R.Cancelled then
+              FillAndReport(Run, Samples, R, 0, Prompt);
+          end;
           WriteLn(Format('Result %d (%s): %d segment(s), language %s (%s), %.2f s of audio in %d ms',
             [R.ResultCode, WhisperResultText(R.ResultCode), Length(R.Segments), R.LanguageCode,
              R.LanguageName, R.AudioSeconds, R.ElapsedMs]));
@@ -508,12 +777,21 @@ begin
                   WhisperTimeToStr(R.Words[I].T1), R.Words[I].Probability, R.Words[I].Text]));
             if LabelsFile <> '' then
             begin
-              WhisperSaveTextFile(LabelsFile, WhisperWordsToLabels(R.Words));
-              WriteLn('Audacity labels written to ', LabelsFile);
+              if (AudioIn <> nil) and (AudioIn.Files.Count > 1) then
+                WriteFileLabels(LabelsFile, AudioIn, R.Words)
+              else
+              begin
+                // one file: its own time line (a chapter's start included)
+                WhisperSaveTextFile(LabelsFile, WhisperWordsToLabels(R.Words));
+                WriteLn('Audacity labels written to ', LabelsFile);
+              end;
             end;
             if JsonFile <> '' then
             begin
-              WhisperSaveTextFile(JsonFile, WhisperWordsToJson(R));
+              if AudioIn <> nil then
+                WhisperSaveTextFile(JsonFile, JsonWithParts(WhisperWordsToJson(R), AudioIn.Parts))
+              else
+                WhisperSaveTextFile(JsonFile, WhisperWordsToJson(R));
               WriteLn('JSON written to ', JsonFile);
             end;
             if AlignFile <> '' then
@@ -536,6 +814,9 @@ begin
         WriteLn(ErrOutput, E.ClassName, ': ', E.Message);
     end;
   finally
+    AudioIn.Free;
+    AudioFiles.Free;
+    FF.Free;
     ExtraModels.Free;
     if TWhisperLib.IsLoaded then
       TWhisperLib.Instance.RemoveLogListener(Handler.Log);
