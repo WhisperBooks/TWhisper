@@ -30,7 +30,8 @@ package WhisperAPI;
 {$IMPLICITBUILD ON}
 
 requires
-  rtl;
+  rtl,
+  FFmpegAPI;
 
 contains
   Whisper.Types in '..\lib\Whisper.Types.pas',

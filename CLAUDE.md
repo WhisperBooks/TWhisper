@@ -41,11 +41,19 @@ speed never picks the model on its own (accuracy).
   include `..\lib\Whisper.inc` by relative path (Delphi looks for an include
   next to the unit or on the search path).
 - GENERATED, never edit by hand: `lib/Whisper.Layout.inc`
-  (tools/verify_layout.py) and `lib/Whisper.FFmpegLayout.inc`
-  (tools/ffmpeg_layout.py <FFmpeg include folder> --write). The OFFSETS /
-  RECORDS tables of ffmpeg_layout.py, the records of Whisper.FFmpeg and
-  the Add(...) list of WhisperFFmpegCheckLayout go together, as for
-  whisper.h.
+  (tools/verify_layout.py).
+- `FFmpegAPI/` - SUBMODULE (github.com/G3DGames/TFFMpegAPI, owner
+  2026-11-14): the FFmpeg binding, with its own CLAUDE.md, checks and
+  FFmpegAPI-NN zips. TWhisper never edits files inside it; a change there
+  is an FFmpegAPI zip, then the owner moves the submodule pointer.
+  lib/Whisper.FFmpeg is only the 16 kHz mono / EWhisperError adapter
+  (TWhisperFFmpeg = TFFmpegLibrary that raises EWhisperError,
+  TWhisperAudioFile over TFFmpegMediaFile + TFFmpegAudioDecoder). Package
+  WhisperAPI requires FFmpegAPI. All three FFmpegAPI packages (FFmpegAPI,
+  FFmpegAPIFMX, dclFFmpegAPIFMX - owner 2026-11-14: TFFmpegAPI "needs it's
+  own palette and package": palette page "FFmpegAPI") come first in
+  WhisperAPI.groupproj (gen_projects.py SUBMODULE_PACKAGES).
+  FPC builds need FFmpegAPI/lib on the unit path.
 - The FIELDS table of tools/verify_layout.py, the record declarations in
   Whisper.Types and the Add(...) list of TWhisperLib.CheckLayout must list
   the same fields in the same order. Adding a field = all three + rerun
@@ -127,7 +135,7 @@ speed never picks the model on its own (accuracy).
   even after a push. A corrected zip gets the NEXT number, never the old
   name; say which number it replaces. Every delivery says what it goes on
   top of: a zip number, or a commit when nothing is pending. Last number
-  used: 13. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
+  used: 14. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
   number in every zip that changes lib/ or the console (its first log
   line says which build made a log - owner was losing track, 20:26).
 - When the owner says a push is done: clone or fetch into a SEPARATE scratch
@@ -172,15 +180,12 @@ standard test because its EPUB text is known.
   real speech: lib/Whisper.Words (new unit), WordTimestamps on the
   component, IncludeWords on TWhisperRun, console --words / --labels /
   --json / --no-dtw, demo "Word timings" + save as Audacity labels / JSON.
-- Last push: 3a92354 ("v8-10", 2026-11-14 ~20:30; checked: all 17 files
-  of zips 01-10 identical apart from line endings; new files tracked:
-  Whisper.FFmpeg.pas, Whisper.FFmpegLayout.inc, Whisper.AudioSet.pas,
-  tools/ffmpeg_layout.py). NOT YET PUSHED: TWhisper-11-drm.zip on
-  3a92354 (DRM check, .aax in folders, Moment v10 notes);
-  TWhisper-12-moved.zip on 11 (relocation pass, notes on Silverthorn /
-  Hobbit / Night Watch / GPU memory); TWhisper-13-warnings.zip on 12
-  (Delphi warnings: W1029 TWhisperLib.CreateLib got a dummy parameter,
-  W1036 Span initialised in Whisper.Align).
+- Last push: 0aa0b87 ("v13", 2026-11-14 ~22:38; checked: zips 11-13
+  identical apart from line endings; f7a5f93 before it added the FFmpegAPI
+  submodule at 3a9dd6e, also checked). NOT YET PUSHED:
+  TWhisper-14-ffmpegapi.zip on 0aa0b87 (Whisper.FFmpeg becomes an
+  adapter over the submodule; Whisper.FFmpegLayout.inc and
+  tools/ffmpeg_layout.py deleted - delete them in the repo too).
 - redistributable_bin/ and *.dll are git-ignored ON PURPOSE (local copy of
   whisper-dev's dlls/; CUDA DLLs exceed GitHub's 100 MB limit). Ship
   binaries as a GitHub Release when needed.

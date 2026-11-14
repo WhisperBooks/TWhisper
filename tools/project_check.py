@@ -10,8 +10,9 @@ For every .dproj / .groupproj under the repository:
     .dpr / .dpk (same set, compared case-insensitively);
   * every project in a .groupproj exists;
   * BUILD ORDER of WhisperAPI.groupproj (owner's rule, 2026-11-14): every
-    package after the packages it requires (WhisperAPI, then WhisperAPIFMX,
-    then the design package dclWhisperAPIFMX), every application after all
+    package after the packages it requires (the FFmpegAPI submodule's
+    FFmpegAPI, then WhisperAPI, WhisperAPIFMX, then the design package
+    dclWhisperAPIFMX), every application after all
     packages, and the Build / Clean / Make targets in the same order as the
     Projects list - another order breaks Build All and Delphi's quick
     re-compilation;

@@ -37,6 +37,16 @@ def lib_units(rel):   # rel = path from project dir to repo root
     return [(u, f"{rel}lib\\{u}.pas") for u in LIB]
 
 
+# Packages of submodules, built first (in this order) by WhisperAPI.groupproj:
+# (name, folder of the .dproj). FFmpegAPI is the FFmpeg binding
+# (github.com/G3DGames/TFFMpegAPI); WhisperAPI requires it. Its FMX and
+# design packages are in the group too (owner, 2026-11-14: TFFmpegAPI has
+# its own palette page "FFmpegAPI" and packages). Its own
+# tools/gen_projects.py makes its projects.
+SUBMODULE_PACKAGES = [("FFmpegAPI", "FFmpegAPI\\packages"),
+                      ("FFmpegAPIFMX", "FFmpegAPI\\packages"),
+                      ("dclFFmpegAPIFMX", "FFmpegAPI\\packages")]
+
 PROJECTS = [
     # The demos use the library like any user project: its DCUs come from the
     # runtime packages' output in Delphi's Dcp folder (default Library path),
@@ -52,7 +62,7 @@ PROJECTS = [
     # Framework-free runtime package: the whole library and TCustomWhisper.
     dict(name="WhisperAPI", dir="packages", kind="runtime", framework="None",
          platforms=PKG_PLATFORMS, default="Win64",
-         units=lib_units("..\\"), forms=[], search="..\\lib", requires=["rtl"],
+         units=lib_units("..\\"), forms=[], search="..\\lib", requires=["rtl", "FFmpegAPI"],
          description="whisper.cpp binding - runtime"),
     dict(name="WhisperAPIFMX", dir="packages", kind="runtime", framework="FMX",
          platforms=PKG_PLATFORMS, default="Win64",
@@ -287,7 +297,7 @@ def groupproj():
          '    <PropertyGroup>', f'        <ProjectGuid>{guid}</ProjectGuid>', '    </PropertyGroup>',
          '    <ItemGroup>']
     # OWNER'S ORDER (2026-11-14, as saved by the IDE): runtime packages
-    # (WhisperAPI, then WhisperAPIFMX), then the design package, then the
+    # (the submodules' FFmpegAPI, then WhisperAPI, then WhisperAPIFMX), then the design package, then the
     # applications - in the Projects window AND in the Build / Clean / Make
     # targets. Build All then compiles a package before everything that
     # needs it, and Delphi's quick re-compilation works; another order
@@ -299,6 +309,9 @@ def groupproj():
         if p["kind"] in ("runtime", "design") else 0
     ordered = sorted(PROJECTS, key=lambda p: (rank_show[p["kind"]], fw(p)))
     build_order = sorted(PROJECTS, key=lambda p: (rank_build[p["kind"]], fw(p)))
+    sub = [dict(name=n, dir=d) for n, d in SUBMODULE_PACKAGES]
+    ordered = sub + ordered
+    build_order = sub + build_order
     for p in ordered:
         rel = f"{p['dir']}\\{p['name']}.dproj"
         L += [f'        <Projects Include="{rel}">', '            <Dependencies/>', '        </Projects>']

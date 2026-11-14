@@ -181,6 +181,7 @@
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
         <DCCReference Include="rtl.dcp"/>
+        <DCCReference Include="FFmpegAPI.dcp"/>
         <DCCReference Include="..\lib\Whisper.Types.pas"/>
         <DCCReference Include="..\lib\Whisper.DynLib.pas"/>
         <DCCReference Include="..\lib\Whisper.API.pas"/>

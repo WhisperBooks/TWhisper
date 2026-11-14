@@ -116,7 +116,7 @@ const
   { The delivery this console comes from (zip number): printed first, so a
     log shows which build made it. Bumped with every zip that changes the
     library or the console. }
-  CONSOLE_DELIVERY = 13;
+  CONSOLE_DELIVERY = 14;
   { Learned habits listed by --align. }
   ALIGN_LEARNED_SHOWN = 20;
   { Marks an interpolated book word in the --align-labels file. }
@@ -591,6 +591,8 @@ begin
           begin
             FF := OpenFFmpeg(FFmpegFolder, Lib.LibraryFolder);
             WriteLn(FF.Description);
+            if FF.Warning <> '' then
+              WriteLn('WARNING: ', FF.Warning);
           end;
           // one part per file, or per chapter of a file with --chapters
           AudioIn := TWhisperAudioSet.Create(FF, AudioFiles, ByChapter);
