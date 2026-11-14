@@ -5,6 +5,7 @@
   Usage:
     WhisperConsole <model.bin> <audio.wav> [language] [--translate] [--device NAME] [--tokens]
                    [--words] [--labels FILE] [--json FILE] [--no-dtw] [--no-flash] [--no-context]
+                   [--prompt TEXT] [--carry-prompt] [--align BOOK.txt] [--align-labels FILE]
     WhisperConsole --check            (library + layout check, device list)
     WhisperConsole --bench <model.bin> <audio.wav> [language] [--seconds N|all]
                    [--devices CUDA0,Vulkan0] [--runs N] [--threads N] [--also <model2.bin>]...
@@ -26,6 +27,16 @@
   --no-context: do not condition each 30 s window on the text before it
            (OpenAI's condition_on_previous_text = False): stops a mistake
            from repeating window after window, at some cost in consistency.
+  --prompt TEXT: initial prompt (vocabulary, names, and the style of the
+           text: a punctuated, capitalised prompt keeps the punctuation).
+  --carry-prompt: repeat the prompt in every 30 s window (with --no-context
+           it keeps the punctuation the windows would otherwise lose).
+  --align BOOK.txt: align the words with the text of record (a UTF-8 plain
+           text, e.g. a Project Gutenberg .txt; implies --words) and report
+           the stretches not spoken and those not heard clearly.
+  --align-labels FILE: Audacity labels of the BOOK's words with their times
+           (interpolated ones marked '?') and a label at every stretch not
+           spoken - to check them by ear (proof-listening).
   An argument starting with '-' that is not an option above is an error (it
   used to be taken as the language).
 
@@ -50,6 +61,7 @@ uses
   Whisper.API,
   Whisper.Audio,
   Whisper.Words,
+  Whisper.Align,
   Whisper.Core;
 
 type
@@ -73,6 +85,75 @@ type
 const
   { Progress is printed every this many percent. }
   PROGRESS_STEP = 10;
+  { Shortest stretch reported by --align, words. }
+  ALIGN_REPORT_MIN_WORDS = 3;
+  { Most book words quoted per reported stretch. }
+  ALIGN_QUOTE_WORDS = 12;
+  { Marks an interpolated book word in the --align-labels file. }
+  INTERPOLATED_MARK = ' ?';
+
+{ Aligns the words of R with the text of ABookFile, prints the figures and
+  the stretches not spoken / not heard clearly, and writes the book's words
+  as Audacity labels to ALabelsFile (when not ''). }
+procedure ReportAlignment(const ABookFile, ALabelsFile: string; const R: TWhisperTranscription);
+var
+  Book: TWhisperStringArray;
+  Aligned: TWhisperAlignedWordArray;
+  Stats: TWhisperAlignStats;
+  Regions: TWhisperAlignRegionArray;
+  Labels: TWhisperWordArray;
+  I, K, N: Integer;
+  Quote, Where: string;
+begin
+  Book := WhisperSplitText(WhisperLoadTextFile(ABookFile));
+  Aligned := WhisperAlignText(Book, R.Words, Stats);
+  WriteLn(Format('Aligned with %s: %d book words - %d exact, %d similar, %d interpolated, %d not spoken ' +
+    '(reading speed %.2f words/s, %d anchors, %d pass(es), %d stray match(es) dropped)',
+    [ABookFile, Stats.BookWords, Stats.Exact, Stats.Similar, Stats.Interpolated, Stats.NotSpoken,
+     Stats.WordsPerSecond, Stats.Anchors, Stats.Passes, Stats.Isolated]));
+  Regions := WhisperAlignRegions(Aligned, ALIGN_REPORT_MIN_WORDS);
+  for I := 0 to High(Regions) do
+  begin
+    Quote := '';
+    for K := Regions[I].First to Regions[I].Last do
+      if K - Regions[I].First < ALIGN_QUOTE_WORDS then
+        Quote := Quote + ' ' + Book[K];
+    if Regions[I].Last - Regions[I].First >= ALIGN_QUOTE_WORDS then
+      Quote := Quote + ' ...';
+    if Regions[I].Time < 0 then
+      Where := 'start'
+    else
+      Where := WhisperTimeToStr(Regions[I].Time);
+    WriteLn(Format('  %s  %s, book words %d-%d:%s', [Where, WhisperAlignMatchName(Regions[I].Match),
+      Regions[I].First, Regions[I].Last, Quote]));
+  end;
+  if ALabelsFile = '' then
+    Exit;
+  Labels := nil;
+  SetLength(Labels, Length(Book) + Length(Regions));
+  N := 0;
+  for I := 0 to High(Book) do
+    if Aligned[I].T0 >= 0 then
+    begin
+      Labels[N].Text := Book[I];
+      if Aligned[I].Match = wamInterpolated then
+        Labels[N].Text := Labels[N].Text + INTERPOLATED_MARK;
+      Labels[N].T0 := Aligned[I].T0;
+      Labels[N].T1 := Aligned[I].T1;
+      Inc(N);
+    end;
+  for I := 0 to High(Regions) do
+    if (Regions[I].Match = wamNotSpoken) and (Regions[I].Time >= 0) then
+    begin
+      Labels[N].Text := Format('NOT SPOKEN: book words %d-%d', [Regions[I].First, Regions[I].Last]);
+      Labels[N].T0 := Regions[I].Time;
+      Labels[N].T1 := Regions[I].Time;
+      Inc(N);
+    end;
+  SetLength(Labels, N);
+  WhisperSaveTextFile(ALabelsFile, WhisperWordsToLabels(Labels));
+  WriteLn('Book word labels written to ', ALabelsFile);
+end;
 
 procedure TConsoleHandler.Segment(Sender: TObject; const ASegment: TWhisperSegment);
 var
@@ -130,7 +211,9 @@ var
   Samples: TWhisperSamples;
   R: TWhisperTranscription;
   ModelFile, AudioFile, Lang, Arg, DeviceName, LabelsFile, JsonFile: string;
+  AlignFile, AlignLabels, Prompt: string;
   CheckOnly, Translate, Tokens, LayoutOk, Bench, WantWords, NoDtw, NoFlash, NoContext: Boolean;
+  CarryPrompt: Boolean;
   BenchSeconds: Double;
   BenchDevices, Threads, Runs: Integer;
   DeviceList: string;
@@ -156,6 +239,10 @@ begin
       NoDtw := False;
       NoFlash := False;
       NoContext := False;
+      CarryPrompt := False;
+      AlignFile := '';
+      AlignLabels := '';
+      Prompt := '';
       LabelsFile := '';
       JsonFile := '';
       Bench := False;
@@ -222,6 +309,24 @@ begin
           NoFlash := True
         else if Arg = '--no-context' then
           NoContext := True
+        else if Arg = '--carry-prompt' then
+          CarryPrompt := True
+        else if (Arg = '--prompt') and (I <= ParamCount) then
+        begin
+          Prompt := ParamStr(I);
+          Inc(I);
+        end
+        else if (Arg = '--align') and (I <= ParamCount) then
+        begin
+          AlignFile := ParamStr(I);
+          WantWords := True;
+          Inc(I);
+        end
+        else if (Arg = '--align-labels') and (I <= ParamCount) then
+        begin
+          AlignLabels := ParamStr(I);
+          Inc(I);
+        end
         else if (Arg = '--labels') and (I <= ParamCount) then
         begin
           LabelsFile := ParamStr(I);
@@ -250,6 +355,7 @@ begin
       begin
         WriteLn('Usage: WhisperConsole <model.bin> <audio.wav> [language] [--translate] [--device NAME] [--tokens]');
         WriteLn('                      [--words] [--labels FILE] [--json FILE] [--no-dtw] [--no-flash] [--no-context]');
+        WriteLn('                      [--prompt TEXT] [--carry-prompt] [--align BOOK.txt] [--align-labels FILE]');
         WriteLn('       WhisperConsole --check');
         WriteLn('       WhisperConsole --bench <model.bin> <audio.wav> [language] [--seconds N|all] [--devices A,B]');
         WriteLn('                      [--runs N] [--threads N] [--also <model2.bin>]...');
@@ -376,6 +482,8 @@ begin
             Params.Threads := Threads;
           Params.TokenTimestamps := Tokens;
           Params.NoContext := NoContext;
+          Params.InitialPrompt := Prompt;
+          Params.CarryInitialPrompt := CarryPrompt;
           if NoContext then
             Params.MaxTextContext := 0;   // no_context alone only drops an earlier run's text
           Run.IncludeTokens := Tokens;
@@ -394,7 +502,7 @@ begin
           if WantWords then
           begin
             WriteLn(Format('%d word(s), timing: %s', [Length(R.Words), WhisperWordTimingName(R.WordTiming)]));
-            if (LabelsFile = '') and (JsonFile = '') then
+            if (LabelsFile = '') and (JsonFile = '') and (AlignFile = '') then
               for I := 0 to High(R.Words) do
                 WriteLn(Format('  [%s --> %s] p=%.3f  %s', [WhisperTimeToStr(R.Words[I].T0),
                   WhisperTimeToStr(R.Words[I].T1), R.Words[I].Probability, R.Words[I].Text]));
@@ -408,6 +516,8 @@ begin
               WhisperSaveTextFile(JsonFile, WhisperWordsToJson(R));
               WriteLn('JSON written to ', JsonFile);
             end;
+            if AlignFile <> '' then
+              ReportAlignment(AlignFile, AlignLabels, R);
           end;
           Lib.RemoveLogListener(Handler.Log);   // timings go to stderr
           if Assigned(Lib.Flat.whisper_print_timings) then

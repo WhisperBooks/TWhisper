@@ -41,6 +41,27 @@ arithmetic. `--no-context` stops each 30 s window from being conditioned on
 the text before it, so a mistake cannot repeat from window to window.
 An unknown option starting with `-` is an error.
 
+`--prompt TEXT` gives an initial prompt: vocabulary, names, and the style of
+the text. `--carry-prompt` repeats it in every 30 s window. With
+`--no-context` the windows otherwise lose their punctuation and capitals,
+and a punctuated prompt keeps them:
+```
+.\WhisperConsole ggml-large-v3-turbo.bin aladdin.wav --no-context --carry-prompt --prompt "Once upon a time, there was a story. It was read aloud." --labels words.txt
+```
+
+`--align BOOK.txt` aligns the words with the text of record. The book is a
+UTF-8 plain text, for example a Project Gutenberg `.txt`; implies `--words`.
+It prints how many book words were matched, then every stretch of at least
+three words that was **not spoken** (the reader skipped it, or it is front
+matter or a licence) or **interpolated** (spoken, but not heard as written),
+each with its time. `--align-labels FILE` writes the book's own words as
+Audacity labels (interpolated words end in " ?"), plus a "NOT SPOKEN" label
+where each skipped stretch belongs. That is the start of an automated
+proof-listener for LibriVox recordings.
+```
+.\WhisperConsole ggml-medium.en.bin aladdin.wav --align aladdin.txt --align-labels aladdin-book.txt
+```
+
 **Checking word timings by ear:** open the WAV in Audacity, File > Import >
 Labels..., choose the labels file. Each word is a label over the audio:
 click a label to select its span and play it (space). Check the start of a

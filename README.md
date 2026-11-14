@@ -197,29 +197,50 @@ Things to know:
   after the first 30 s window. `TWhisperRun` also collects segments when the
   next window starts, so `OnSegment` keeps arriving.
 
-## Aligning a book's text (EPUB sync, step 1)
+## Aligning a book's text (EPUB sync, proof-listening)
 
-`WhisperAlignText(BookWords, Transcription.Words, Stats)` (`Whisper.Align`)
-gives every word of the book its time. The book is the text of record: the
-transcript only supplies times, so its misspellings and mistakes never
-reach the reader.
+`WhisperAlignText(WhisperSplitText(BookText), Transcription.Words, Stats)`
+(`Whisper.Align`) gives every word of the book its spoken time, or marks it
+**not spoken**. The book is the text of record: the transcript only supplies
+times, so its misspellings and mistakes never reach the reader.
 
-How it works:
-- **Anchors:** three-word sequences found exactly once in both texts. Only
+Nothing relies on markup: where the reading starts and ends follows from the
+alignment itself. That matters because Gutenberg, calibre and retail EPUBs
+all differ, and text and recording may come from different editions.
+- **Tokens.** Lower case, letters and digits only. Soft hyphens and
+  zero-width characters are dropped, Latin accents folded and ligatures
+  expanded. Numbers become words: "40" = forty, "1867" = eighteen sixty
+  seven, "21st" = twenty first.
+- **Anchors.** Three-token sequences found exactly once in both texts. Only
   the longest chain that runs in order through both is kept.
-- **Gaps:** between anchors, an edit-distance alignment pairs equal or
-  similar words (Mustapha and Mustafa, beguiled and begoaled).
-- **Times:** paired book words take their transcript word's time. Unpaired
-  ones share the time between their neighbours, and text before the first
-  or after the last paired word gets none.
+- **Gaps.** Between anchors, an edit-distance alignment pairs equal or
+  similar tokens (Mustapha / Mustafa), and two tokens against one when they
+  spell the same ("on to" / "onto").
+- **Times.** Unpaired words take the time between their neighbours, unless
+  that would mean reading far faster than this reader does (2.5 times their
+  speed, and at least 6 words a second). Such a run was not spoken, and so
+  is text before the first or after the last timed word.
+- **Coincidences.** A small cluster of matches with unspoken text on both
+  sides is taken out and the alignment is run again. Gutenberg's header
+  repeats the title, so this finds the title where it is really read.
+- **Report.** `WhisperAlignRegions` lists the stretches that were not
+  spoken or not heard clearly.
 
-On Aladdin (medium.en DTW words) 5202 of the 5261 story words pair exactly,
-46 as similar spellings, and 13 are interpolated, each one alone. A
-166k-word book aligns in about a second.
+Tested on Aladdin (Gutenberg #57, medium.en DTW words), with the whole EPUB
+text including the Gutenberg header and licence:
 
-Give it only spoken text. Project Gutenberg's header and licence repeat the
-title and would take its times. The EPUB step (reading the book, adding
-span ids, writing EPUB 3 Media Overlays) comes next.
+| Test | Result |
+|---|---|
+| The book as it is | 5218 exact, 33 similar, 13 interpolated (each alone); header and licence not spoken |
+| Book has an extra 130-word paragraph | exactly those 130 words not spoken |
+| Recording has a paragraph the book lacks | no effect |
+| Preface and table of contents repeating the title | all not spoken |
+| Soft hyphens, ligatures, accents, numbers as digits | no word lost |
+
+A 166k-word book aligns in about a second.
+
+In WhisperConsole: `--align book.txt --align-labels book-labels.txt` (see
+demos/WhisperConsole/README.md).
 
 ## Using the component
 

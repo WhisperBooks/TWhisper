@@ -154,12 +154,11 @@ standard test because its EPUB text is known.
   real speech: lib/Whisper.Words (new unit), WordTimestamps on the
   component, IncludeWords on TWhisperRun, console --words / --labels /
   --json / --no-dtw, demo "Word timings" + save as Audacity labels / JSON.
-- Last push: 4796e40 + TWhisper-console.zip applied (owner ran its
-  options). NOT YET PUSHED: TWhisper-console.zip and TWhisper-align.zip
-  (MaxTextContext / NoContext fixed, word spans refined, log tidy, new
-  lib/Whisper.Align). PACKAGE REBUILD needed for the latter. CMakeLists.txt still at the root (owner
-  to git rm - whisper-dev's file). Clone a fresh copy and compare before the
-  next delivery.
+- Last push: f62857d ("Aladdin tests", 2026-11-14 15:3x; checked: every
+  delivered file identical, CMakeLists.txt gone; the IDE added Android
+  EnabledSysJars to dclWhisperAPIFMX.dproj - harmless). NOT YET PUSHED:
+  TWhisper-align2.zip (aligner v2, console --prompt / --carry-prompt /
+  --align / --align-labels, WhisperLoadTextFile). PACKAGE REBUILD needed.
 - redistributable_bin/ and *.dll are git-ignored ON PURPOSE (local copy of
   whisper-dev's dlls/; CUDA DLLs exceed GitHub's 100 MB limit). Ship
   binaries as a GitHub Release when needed.
@@ -190,7 +189,13 @@ Commands in READMEs: PowerShell needs the .\ prefix (.\WhisperConsole ...).
    whisper.cpp clears the KV cache at every window (line 7350), so DTW
    leaves no state behind; most likely the different arithmetic of flash
    attention off steered greedy decoding into Whisper's known
-   condition-on-previous-text loop. RESULT (owner, 15:00): turbo
+   condition-on-previous-text loop. FINAL (owner, 15:33): turbo DTW with
+   --no-context (fixed: n_max_text_ctx = 0) is CLEAN - 241 segments, 5300
+   words, 25 s, no fallbacks. Side effect: without context many windows
+   lose punctuation and capitals (lower-case run-on text). Cure to test:
+   --carry-prompt --prompt "Once upon a time, there was a story. It was
+   read aloud." (carry_initial_prompt repeats a fixed prompt per window).
+   Earlier: RESULT (owner, 15:00): turbo
    --no-flash --no-dtw breaks down IDENTICALLY (same 2241 segments, 4999
    words, same times) - FLASH ATTENTION OFF IS THE TRIGGER, NOT DTW.
    turbo DTW --no-context was also identical - because whisper.cpp's
@@ -218,7 +223,19 @@ Commands in READMEs: PowerShell needs the .\ prefix (.\WhisperConsole ...).
    decode", "failed to encode") show as ERROR - log them as info while a
    cancel is pending; the "Transcription started" line says "language
    auto" for .en models (the run is forced to en) - show the real one.
-3. EPUB alignment. CORE DONE (session 5): lib/Whisper.Align
+3. EPUB alignment. ALIGNER V2 (session 5, later): content-based, no
+   markup needed (owner: calibre / Kindle / retail EPUBs differ, text and
+   recording may be different editions): tokens with numbers as words,
+   accents folded, ligatures, soft hyphens; 2:1 / 1:2 joins; speaking-rate
+   check -> wamNotSpoken; isolated small clusters dropped and the
+   alignment rerun (Gutenberg header title); edge gaps limited to a
+   plausible reading distance; regions report. Tested with FPC on Aladdin
+   + damaged copies (extra paragraph -> exactly those words not spoken;
+   recording-only paragraph -> no effect; rewordings local; preface/TOC ->
+   not spoken; debris -> nothing lost). Known: the reader's "End of
+   Aladdin ..." pairs with Gutenberg's "END OF THE" next to the last
+   sentence (content cannot tell; a markup hint can). Console --align /
+   --align-labels for the owner to try. V1 notes: lib/Whisper.Align
    (WhisperAlignText: unique-trigram anchors, longest increasing chain,
    edit-distance pairing in the gaps with a similar-spelling match,
    interpolation between paired words; ends without a paired neighbour
@@ -300,6 +317,26 @@ Found in the pinned whisper.cpp (5922450):
 - BLAS (WHISPER_DEV_BLAS, off): worth one measured build; usually little
   gain on a modern CPU. Quantised models (q5_0 / q8_0) are the bigger CPU
   win - benchmark them, and check their word-timing accuracy.
+
+### Proof-listener for LibriVox (owner, 2026-11-14: give it away free)
+Automated proof-listening: the section text + the recording -> every
+place the reading differs, with its time, as Audacity labels the reader
+imports to overdub / re-record. Built on Whisper.Align (its not-spoken and
+interpolated regions, and the paired words that differ). FIRST TEST
+(Aladdin, two transcripts: medium.en and turbo, flagging only where BOTH
+disagree with the text): ~16 candidates in 35 min, most genuine misreadings
+(4:16 "to a niche", 4:22 "bring it to me", 8:53 "the napkin", 13:28 "and
+bade", 15:19 "I will", 16:59 "intended", 24:07 "In that instant", 24:13
+"was scaling", 31:31 "her face", 32:47 "he replied", 34:02 "in your
+wife's head"); false alarms e.g. "sorter"/"daughter" (accent), "hit"/"hid".
+Rules: NEVER give Whisper the book text as prompt (it would correct the
+reader); two models or decodes, flag only agreements; word probability as
+confidence. Inputs: Gutenberg .txt (plain-text path) or EPUB, MP3 (needs
+the FFmpeg step); find the section inside the whole book by content. Also:
+check the LibriVox intro / outro wording. Limits: Whisper drops stumbles
+and doubled words, so false starts are not reliably caught. Default model
+for volunteers' laptops: base.en / small.en on CPU, medium.en "thorough".
+Later a small FMX app.
 
 ### Future product (add-on, AFTER the book sync works): EPUB illustration
 Owner's idea: illustrate public-domain EPUBs with local image models.

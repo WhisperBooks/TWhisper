@@ -420,6 +420,11 @@ function WhisperSegmentsToVtt(const ASegments: TWhisperSegmentArray): string;
   @raises(EFCreateError / EStreamError when the file cannot be written.) }
 procedure WhisperSaveTextFile(const AFileName, AText: string);
 
+{ Reads a UTF-8 text file (a byte order mark is skipped), e.g. a Project
+  Gutenberg plain-text book for @code(WhisperSplitText).
+  @raises(EFOpenError / EStreamError when the file cannot be read.) }
+function WhisperLoadTextFile(const AFileName: string): string;
+
 implementation
 
 uses
@@ -562,6 +567,28 @@ begin
   finally
     S.Free;
   end;
+end;
+
+function WhisperLoadTextFile(const AFileName: string): string;
+const
+  BOM_SIZE = 3;
+var
+  S: TFileStream;
+  U: UTF8String;
+  N: Integer;
+begin
+  S := TFileStream.Create(AFileName, fmOpenRead or fmShareDenyWrite);
+  try
+    N := S.Size;
+    SetLength(U, N);
+    if N > 0 then
+      S.ReadBuffer(PAnsiChar(U)^, N);
+  finally
+    S.Free;
+  end;
+  if (Length(U) >= BOM_SIZE) and (Ord(U[1]) = $EF) and (Ord(U[2]) = $BB) and (Ord(U[3]) = $BF) then
+    Delete(U, 1, BOM_SIZE);
+  Result := string(U);
 end;
 
 { TWhisperModel }

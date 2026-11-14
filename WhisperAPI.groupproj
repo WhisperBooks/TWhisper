@@ -3,20 +3,20 @@
         <ProjectGuid>{35EB8264-BBED-4110-9F1B-39FD3C68FBEA}</ProjectGuid>
     </PropertyGroup>
     <ItemGroup>
-        <Projects Include="demos\WhisperDemo\WhisperDemo.dproj">
-            <Dependencies>packages\WhisperAPIFMX.dproj</Dependencies>
-        </Projects>
-        <Projects Include="demos\WhisperConsole\WhisperConsole.dproj">
-            <Dependencies>packages\WhisperAPI.dproj</Dependencies>
-        </Projects>
         <Projects Include="packages\WhisperAPI.dproj">
             <Dependencies/>
         </Projects>
         <Projects Include="packages\WhisperAPIFMX.dproj">
-            <Dependencies>packages\WhisperAPI.dproj</Dependencies>
+            <Dependencies/>
         </Projects>
         <Projects Include="packages\dclWhisperAPIFMX.dproj">
-            <Dependencies>packages\WhisperAPIFMX.dproj</Dependencies>
+            <Dependencies/>
+        </Projects>
+        <Projects Include="demos\WhisperDemo\WhisperDemo.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="demos\WhisperConsole\WhisperConsole.dproj">
+            <Dependencies/>
         </Projects>
     </ItemGroup>
     <ProjectExtensions>
@@ -26,24 +26,6 @@
             <Default.Personality/>
         </BorlandProject>
     </ProjectExtensions>
-    <Target Name="WhisperDemo">
-        <MSBuild Projects="demos\WhisperDemo\WhisperDemo.dproj"/>
-    </Target>
-    <Target Name="WhisperDemo:Clean">
-        <MSBuild Projects="demos\WhisperDemo\WhisperDemo.dproj" Targets="Clean"/>
-    </Target>
-    <Target Name="WhisperDemo:Make">
-        <MSBuild Projects="demos\WhisperDemo\WhisperDemo.dproj" Targets="Make"/>
-    </Target>
-    <Target Name="WhisperConsole">
-        <MSBuild Projects="demos\WhisperConsole\WhisperConsole.dproj"/>
-    </Target>
-    <Target Name="WhisperConsole:Clean">
-        <MSBuild Projects="demos\WhisperConsole\WhisperConsole.dproj" Targets="Clean"/>
-    </Target>
-    <Target Name="WhisperConsole:Make">
-        <MSBuild Projects="demos\WhisperConsole\WhisperConsole.dproj" Targets="Make"/>
-    </Target>
     <Target Name="WhisperAPI">
         <MSBuild Projects="packages\WhisperAPI.dproj"/>
     </Target>
@@ -70,6 +52,24 @@
     </Target>
     <Target Name="dclWhisperAPIFMX:Make">
         <MSBuild Projects="packages\dclWhisperAPIFMX.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="WhisperDemo">
+        <MSBuild Projects="demos\WhisperDemo\WhisperDemo.dproj"/>
+    </Target>
+    <Target Name="WhisperDemo:Clean">
+        <MSBuild Projects="demos\WhisperDemo\WhisperDemo.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="WhisperDemo:Make">
+        <MSBuild Projects="demos\WhisperDemo\WhisperDemo.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="WhisperConsole">
+        <MSBuild Projects="demos\WhisperConsole\WhisperConsole.dproj"/>
+    </Target>
+    <Target Name="WhisperConsole:Clean">
+        <MSBuild Projects="demos\WhisperConsole\WhisperConsole.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="WhisperConsole:Make">
+        <MSBuild Projects="demos\WhisperConsole\WhisperConsole.dproj" Targets="Make"/>
     </Target>
     <Target Name="Build">
         <CallTarget Targets="WhisperAPI;WhisperAPIFMX;dclWhisperAPIFMX;WhisperDemo;WhisperConsole"/>
