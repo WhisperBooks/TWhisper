@@ -197,6 +197,30 @@ Things to know:
   after the first 30 s window. `TWhisperRun` also collects segments when the
   next window starts, so `OnSegment` keeps arriving.
 
+## Aligning a book's text (EPUB sync, step 1)
+
+`WhisperAlignText(BookWords, Transcription.Words, Stats)` (`Whisper.Align`)
+gives every word of the book its time. The book is the text of record: the
+transcript only supplies times, so its misspellings and mistakes never
+reach the reader.
+
+How it works:
+- **Anchors:** three-word sequences found exactly once in both texts. Only
+  the longest chain that runs in order through both is kept.
+- **Gaps:** between anchors, an edit-distance alignment pairs equal or
+  similar words (Mustapha and Mustafa, beguiled and begoaled).
+- **Times:** paired book words take their transcript word's time. Unpaired
+  ones share the time between their neighbours, and text before the first
+  or after the last paired word gets none.
+
+On Aladdin (medium.en DTW words) 5202 of the 5261 story words pair exactly,
+46 as similar spellings, and 13 are interpolated, each one alone. A
+166k-word book aligns in about a second.
+
+Give it only spoken text. Project Gutenberg's header and licence repeat the
+title and would take its times. The EPUB step (reading the book, adding
+span ids, writing EPUB 3 Media Overlays) comes next.
+
 ## Using the component
 
 1. Build and install the packages (see below), drop a `TWhisperAPI`
@@ -240,6 +264,7 @@ lib/       framework-free units (Delphi + FPC 3.2.2)
   Whisper.API           TWhisperLib: loading, backends, devices, every export, ABI shims, layout check, log
   Whisper.Audio         WAV reader, 16-bit PCM conversion, windowed-sinc resampler
   Whisper.Words         word timings: model header -> DTW heads, tokens -> words, JSON / Audacity labels
+  Whisper.Align         book text <-> transcript words: every book word gets its spoken time
   Whisper.Core          TWhisperModel, TWhisperParams, TWhisperRun, TWhisperBenchmark, text export
   Whisper.Components    TCustomWhisper (lifecycle, worker thread, main-thread events)
 fmx/       Whisper.FMX (TWhisperAPI), Whisper.FMX.Reg (design time)

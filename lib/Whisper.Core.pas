@@ -160,8 +160,18 @@ type
     property OffsetMs: Int32 read FRaw.offset_ms write FRaw.offset_ms;
     { Duration to process in ms (0 = to the end). }
     property DurationMs: Int32 read FRaw.duration_ms write FRaw.duration_ms;
-    { Do not use earlier text as prompt. }
+    { whisper.cpp's no_context: start without the text of an EARLIER
+      whisper_full call on the same context. It does NOT stop the 30 s
+      windows of one run from being conditioned on the text before them -
+      that is @link(MaxTextContext) = 0. }
     property NoContext: Boolean read FRaw.no_context write FRaw.no_context;
+    { Most tokens of the text so far given to the decoder as context for the
+      next 30 s window (whisper.cpp's n_max_text_ctx; library default 16384,
+      capped at half the model's text context). 0 = every window is decoded
+      on its own (OpenAI's condition_on_previous_text = False): a mistake
+      such as a stray quote cannot repeat window after window, at some cost
+      in consistency of spelling and punctuation. }
+    property MaxTextContext: Int32 read FRaw.n_max_text_ctx write FRaw.n_max_text_ctx;
     { Do not produce time stamps. }
     property NoTimestamps: Boolean read FRaw.no_timestamps write FRaw.no_timestamps;
     { One segment only (streaming). }

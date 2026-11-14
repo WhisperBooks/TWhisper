@@ -83,7 +83,7 @@ type
     property SplitOnWord;
     { Initial prompt. }
     property InitialPrompt;
-    { Do not use earlier text as prompt. }
+    { Decode each 30 s window without the text before it as context. }
     property NoContext;
     { Suppress non-speech tokens. }
     property SuppressNonSpeech;

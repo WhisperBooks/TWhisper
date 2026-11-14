@@ -22,7 +22,7 @@ import os, re, uuid
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 LIB = ["Whisper.Types", "Whisper.DynLib", "Whisper.API", "Whisper.Audio", "Whisper.Words",
-       "Whisper.Core", "Whisper.Components"]
+       "Whisper.Align", "Whisper.Core", "Whisper.Components"]
 
 # 64-bit targets only for programs (owner 2026-11-13: no 32-bit build; ggml
 # does not link for 32-bit MSVC). The runtime packages also build for Win32,

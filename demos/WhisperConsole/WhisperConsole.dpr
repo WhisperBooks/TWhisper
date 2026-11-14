@@ -4,7 +4,7 @@
 
   Usage:
     WhisperConsole <model.bin> <audio.wav> [language] [--translate] [--device NAME] [--tokens]
-                   [--words] [--labels FILE] [--json FILE] [--no-dtw]
+                   [--words] [--labels FILE] [--json FILE] [--no-dtw] [--no-flash] [--no-context]
     WhisperConsole --check            (library + layout check, device list)
     WhisperConsole --bench <model.bin> <audio.wav> [language] [--seconds N|all]
                    [--devices CUDA0,Vulkan0] [--runs N] [--threads N] [--also <model2.bin>]...
@@ -21,6 +21,13 @@
   --json FILE: write segments and words as JSON (implies --words).
   --no-dtw: word times from whisper.cpp's token time stamps instead of DTW
            (to compare the two).
+  --no-flash: flash attention off (DTW turns it off anyway): to tell a
+           difference caused by DTW from one caused by the other arithmetic.
+  --no-context: do not condition each 30 s window on the text before it
+           (OpenAI's condition_on_previous_text = False): stops a mistake
+           from repeating window after window, at some cost in consistency.
+  An argument starting with '-' that is not an option above is an error (it
+  used to be taken as the language).
 
   It logs every step with its values: library file and version, system info,
   the layout check, the model, the audio as read, each segment as it
@@ -123,7 +130,7 @@ var
   Samples: TWhisperSamples;
   R: TWhisperTranscription;
   ModelFile, AudioFile, Lang, Arg, DeviceName, LabelsFile, JsonFile: string;
-  CheckOnly, Translate, Tokens, LayoutOk, Bench, WantWords, NoDtw: Boolean;
+  CheckOnly, Translate, Tokens, LayoutOk, Bench, WantWords, NoDtw, NoFlash, NoContext: Boolean;
   BenchSeconds: Double;
   BenchDevices, Threads, Runs: Integer;
   DeviceList: string;
@@ -147,6 +154,8 @@ begin
       Tokens := False;
       WantWords := False;
       NoDtw := False;
+      NoFlash := False;
+      NoContext := False;
       LabelsFile := '';
       JsonFile := '';
       Bench := False;
@@ -209,6 +218,10 @@ begin
           WantWords := True
         else if Arg = '--no-dtw' then
           NoDtw := True
+        else if Arg = '--no-flash' then
+          NoFlash := True
+        else if Arg = '--no-context' then
+          NoContext := True
         else if (Arg = '--labels') and (I <= ParamCount) then
         begin
           LabelsFile := ParamStr(I);
@@ -221,6 +234,11 @@ begin
           WantWords := True;
           Inc(I);
         end
+        else if (Length(Arg) > 1) and (Arg[1] = '-') then
+        begin
+          WriteLn(ErrOutput, 'Unknown option ', Arg, ' (run without arguments for the usage)');
+          Exit;
+        end
         else if ModelFile = '' then
           ModelFile := Arg
         else if AudioFile = '' then
@@ -231,7 +249,7 @@ begin
       if not CheckOnly and ((ModelFile = '') or (AudioFile = '')) then
       begin
         WriteLn('Usage: WhisperConsole <model.bin> <audio.wav> [language] [--translate] [--device NAME] [--tokens]');
-        WriteLn('                      [--words] [--labels FILE] [--json FILE] [--no-dtw]');
+        WriteLn('                      [--words] [--labels FILE] [--json FILE] [--no-dtw] [--no-flash] [--no-context]');
         WriteLn('       WhisperConsole --check');
         WriteLn('       WhisperConsole --bench <model.bin> <audio.wav> [language] [--seconds N|all] [--devices A,B]');
         WriteLn('                      [--runs N] [--threads N] [--also <model2.bin>]...');
@@ -335,6 +353,8 @@ begin
         WriteLn(ErrOutput, 'Unknown device ', DeviceName, ' (see the device list above)');
         Exit;
       end;
+      if NoFlash then
+        CP.flash_attn := False;
       if WantWords and not NoDtw and not WhisperEnableDtw(ModelFile, CP) then
         WriteLn(ErrOutput, 'Cannot read the model header for the DTW alignment heads: ',
           'word times come from token time stamps');
@@ -355,13 +375,18 @@ begin
           if Threads > 0 then
             Params.Threads := Threads;
           Params.TokenTimestamps := Tokens;
+          Params.NoContext := NoContext;
+          if NoContext then
+            Params.MaxTextContext := 0;   // no_context alone only drops an earlier run's text
           Run.IncludeTokens := Tokens;
           Run.IncludeWords := WantWords;
           Handler.ShowTokens := Tokens;
           Run.OnSegment := Handler.Segment;
           Run.OnProgress := Handler.Progress;
-          WriteLn(Format('Transcribing: language %s, %d threads, %s', [Params.Language, Params.Threads,
-            IfThen(Translate, 'translate to English', 'transcribe')]));
+          WriteLn(Format('Transcribing: language %s, %d threads, %s, flash attention %s, ' +
+            'previous text as context %s', [Params.Language, Params.Threads,
+            IfThen(Translate, 'translate to English', 'transcribe'), BoolToStr(CP.flash_attn, True),
+            BoolToStr(Params.MaxTextContext > 0, True)]));
           R := Run.Execute(Samples);
           WriteLn(Format('Result %d (%s): %d segment(s), language %s (%s), %.2f s of audio in %d ms',
             [R.ResultCode, WhisperResultText(R.ResultCode), Length(R.Segments), R.LanguageCode,

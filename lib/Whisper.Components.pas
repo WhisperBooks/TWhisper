@@ -280,6 +280,9 @@ type
     FClosing: Boolean;
     { @true while subscribed to the library log. }
     FLogHooked: Boolean;
+    { @true from Cancel until the cancelled run ends: whisper.cpp's abort
+      messages are then logged as info, not as errors. }
+    FCancelPending: Boolean;
     { Backing field of @link(OnLoaded). }
     FOnLoaded: TNotifyEvent;
     { Backing field of @link(OnLoadFailed). }
@@ -327,6 +330,9 @@ type
     procedure SyncProgress(Sender: TObject; AProgress: Integer);
     { Fires OnLog (main thread), with a handler exception shown. }
     procedure FireLog(ALevel: TWhisperLogLevel; const AText: string);
+    { The language a run will use, for the log: an English-only model is
+      always run in English, whatever Language says. }
+    function RunLanguageText(AParams: TWhisperParams): string;
   protected
     { Applies Active from the form file. }
     procedure Loaded; override;
@@ -450,7 +456,10 @@ type
     property SplitOnWord: Boolean read FSplitOnWord write FSplitOnWord default False;
     { Initial prompt: vocabulary, names, style. }
     property InitialPrompt: string read FInitialPrompt write FInitialPrompt;
-    { Do not use earlier text as prompt. }
+    { Decode every 30 s window on its own, without the text before it as
+      context (whisper.cpp's no_context and n_max_text_ctx = 0; OpenAI's
+      condition_on_previous_text = False). Stops a mistake from repeating
+      window after window, at some cost in consistency. }
     property NoContext: Boolean read FNoContext write FNoContext default False;
     { Suppress non-speech tokens. }
     property SuppressNonSpeech: Boolean read FSuppressNonSpeech write FSuppressNonSpeech default False;
@@ -939,6 +948,8 @@ begin
     Result.SplitOnWord := FSplitOnWord;
     Result.InitialPrompt := FInitialPrompt;
     Result.NoContext := FNoContext;
+    if FNoContext then
+      Result.MaxTextContext := 0;
     Result.SuppressNonSpeech := FSuppressNonSpeech;
     Result.Vad := FVad;
     Result.VadModelFile := FVadModelFile;
@@ -965,8 +976,9 @@ begin
     P.Free;
     raise;
   end;
+  FCancelPending := False;
   Log(wllInfo, Format('Transcription started (%s, language %s, %s)',
-    [FModel.ModelType, P.Language, IfThen(P.Translate, 'translate', 'transcribe')]));
+    [FModel.ModelType, RunLanguageText(P), IfThen(P.Translate, 'translate', 'transcribe')]));
   FWorker.Start;
 end;
 
@@ -993,6 +1005,7 @@ begin
   if Busy then
     raise EWhisperError.Create('A transcription or benchmark is already running');
   P := BuildRunParams;
+  FCancelPending := False;
   try
     FSyncRun := TWhisperRun.Create(FModel, P);
     try
@@ -1018,6 +1031,8 @@ end;
 
 procedure TCustomWhisper.Cancel;
 begin
+  if (FWorker <> nil) or (FSyncRun <> nil) or (FBenchWorker <> nil) then
+    FCancelPending := True;
   if FWorker <> nil then
     FWorker.Cancel;
   if FSyncRun <> nil then
@@ -1185,7 +1200,18 @@ end;
 procedure TCustomWhisper.LibLog(Sender: TObject; ALevel: TWhisperLogLevel; const AText: string);
 var
   M: TWhisperQueuedMessage;
+  Lower: string;
 begin
+  // After Cancel whisper.cpp reports the abort it was asked for as errors
+  // ("encoder_begin_callback returned false - aborting", "failed to
+  // encode", "failed to decode"): expected, so info.
+  if FCancelPending and (ALevel = wllError) then
+  begin
+    Lower := LowerCase(AText);
+    if (Pos('abort', Lower) > 0) or (Pos('failed to encode', Lower) > 0) or
+      (Pos('failed to decode', Lower) > 0) then
+      ALevel := wllInfo;
+  end;
   if (FLogLevel <> wllNone) and (ALevel < FLogLevel) and (ALevel <> wllNone) then
     Exit;
   if TThread.CurrentThread.ThreadID = MainThreadID then
@@ -1198,6 +1224,14 @@ begin
     M.FText := AText;
     Post(M);
   end;
+end;
+
+function TCustomWhisper.RunLanguageText(AParams: TWhisperParams): string;
+begin
+  Result := Trim(AParams.Language);
+  if (FModel <> nil) and not FModel.IsMultilingual and
+    ((Result = '') or SameText(Result, WHISPER_LANGUAGE_AUTO)) then
+    Result := 'en (English-only model)';
 end;
 
 procedure TCustomWhisper.Log(ALevel: TWhisperLogLevel; const AText: string);
@@ -1264,6 +1298,7 @@ begin
             W.WaitFor;
             W.Free;
           end;
+          FCancelPending := False;
           if AMessage.FResult.ErrorMessage <> '' then
             Log(wllError, 'Transcription failed: ' + AMessage.FResult.ErrorMessage)
           else
@@ -1299,6 +1334,7 @@ begin
         begin
           BW := FBenchWorker;
           FBenchWorker := nil;
+          FCancelPending := False;
           if BW <> nil then
           begin
             BW.WaitFor;

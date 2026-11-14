@@ -154,14 +154,12 @@ standard test because its EPUB text is known.
   real speech: lib/Whisper.Words (new unit), WordTimestamps on the
   component, IncludeWords on TWhisperRun, console --words / --labels /
   --json / --no-dtw, demo "Word timings" + save as Audacity labels / JSON.
-- Last push: 279269e ("HIP": HIP.md + CLAUDE.md from the HIP session). That
-  push ALSO put whisper-dev's README.md (over TWhisper's) and whisper-dev's
-  CMakeLists.txt into THIS repository by mistake. NOT YET PUSHED:
-  TWhisper-words.zip (session 5, rebased on 279269e: its README.md restores
-  TWhisper's README; delete list: CMakeLists.txt) and whisper-dev-fix.zip
-  (those two files, newer than whisper-dev's a9c1221: Linux Vulkan from
-  distribution packages, for the whisper-dev repository). Clone a fresh
-  copy and compare before the next delivery.
+- Last push: 4796e40 + TWhisper-console.zip applied (owner ran its
+  options). NOT YET PUSHED: TWhisper-console.zip and TWhisper-align.zip
+  (MaxTextContext / NoContext fixed, word spans refined, log tidy, new
+  lib/Whisper.Align). PACKAGE REBUILD needed for the latter. CMakeLists.txt still at the root (owner
+  to git rm - whisper-dev's file). Clone a fresh copy and compare before the
+  next delivery.
 - redistributable_bin/ and *.dll are git-ignored ON PURPOSE (local copy of
   whisper-dev's dlls/; CUDA DLLs exceed GitHub's 100 MB limit). Ship
   binaries as a GitHub Release when needed.
@@ -176,23 +174,68 @@ its dlls\ on PATH. Models: C:\models\whisper (10 models).
 Commands in READMEs: PowerShell needs the .\ prefix (.\WhisperConsole ...).
 
 ### NEXT (agreed order)
-1. WORD-LEVEL TIMINGS - code done (session 5). Owner: package rebuild,
-   then check BY EAR against Aladdin (WhisperConsole --labels, Audacity
-   File > Import > Labels) at several points, per model (large-v3-turbo,
-   medium.en, base.en, a quantised one) and DTW vs --no-dtw; also the
-   benchmark with Word timings on (cost of flash attention off). Then fix
-   what the ear finds. Known gap: DTW words are contiguous (a word after a
+1. WORD-LEVEL TIMINGS - code done (session 5). FIRST WINDOWS RUNS (owner,
+   2026-11-14, whole Aladdin, CUDA0 - whisper.cpp's default, no --device):
+   - medium.en + DTW: heads medium.en, clean transcript (as without DTW),
+     5298 words, 74.3 s vs 54.2 s without DTW (encode 59 vs 24 ms per
+     window, decode 7.8 vs 6.7 ms per token: the cost of flash attention
+     off). Labels written - NOT YET LISTENED TO.
+   - large-v3-turbo + DTW: heads large-v3-turbo detected, but the
+     TRANSCRIPT BROKE DOWN at 9:28: a stray "' prefix fed back through the
+     previous-text context into every later window; segments shrank to one
+     word, phrases were dropped (gaps e.g. 23:44-23:51, 29:03-29:24,
+     33:17-33:30), 40 s instead of 20 s. Words from 9:28 on are useless.
+   - large-v3-turbo --no-dtw (flash on, token time stamps): clean, 5345
+     words, 20.6 s.
+   whisper.cpp clears the KV cache at every window (line 7350), so DTW
+   leaves no state behind; most likely the different arithmetic of flash
+   attention off steered greedy decoding into Whisper's known
+   condition-on-previous-text loop. RESULT (owner, 15:00): turbo
+   --no-flash --no-dtw breaks down IDENTICALLY (same 2241 segments, 4999
+   words, same times) - FLASH ATTENTION OFF IS THE TRIGGER, NOT DTW.
+   turbo DTW --no-context was also identical - because whisper.cpp's
+   no_context only drops the text of an EARLIER whisper_full call; the
+   windows of one run stay conditioned unless n_max_text_ctx = 0 (its
+   "-mc 0"). Fixed: TWhisperParams.MaxTextContext, component NoContext
+   now sets it to 0, console --no-context too. Rerun turbo --no-context.
+   Earlier plan was: TO TELL: turbo --no-flash --words
+   --no-dtw (flash off, no DTW) - loop again? - and turbo --labels ...
+   --no-context (DTW without previous-text context). If flash-off alone
+   loops, consider NoContext (or a temperature fallback / repetition check)
+   as the default for word runs; the EPUB aligner must also cope with
+   dropped and repeated text in any case.
+   STILL TO DO: check BY EAR against Aladdin (Audacity File > Import >
+   Labels) at several points, per model (large-v3-turbo, medium.en,
+   base.en, a quantised one) and DTW vs --no-dtw; Vulkan0 runs (owner:
+   Vulkan is faster); the benchmark with Word timings on. Then fix what
+   the ear finds. Known gap: DTW words are contiguous (a word after a
    pause starts at the previous word's end unless the segment rules catch
    it) - if highlighting / cues need real silences, trim word edges by
    audio energy (or VAD probabilities) as a later step.
-2. Small log tidy: the abort lines whisper.cpp logs after a cancel
+2. DONE (session 5, untested): log tidy - abort lines after Cancel are
+   info, "Transcription started" shows 'en (English-only model)'. Was: the abort lines whisper.cpp logs after a cancel
    ("encoder_begin_callback returned false - aborting", "failed to
    decode", "failed to encode") show as ERROR - log them as info while a
    cancel is pending; the "Transcription started" line says "language
    auto" for .en models (the run is forced to en) - show the real one.
-3. EPUB alignment (EPUB = text of record; transcript only supplies the
-   times; handle numbers, names, headings, preambles), then XHTML ids +
-   SMIL + packaging; cue builder for subtitles (below).
+3. EPUB alignment. CORE DONE (session 5): lib/Whisper.Align
+   (WhisperAlignText: unique-trigram anchors, longest increasing chain,
+   edit-distance pairing in the gaps with a similar-spelling match,
+   interpolation between paired words; ends without a paired neighbour
+   get no time). Tested here with FPC on the owner's Aladdin EPUB
+   (Gutenberg #57, EPUB 2, story in one XHTML of 25 <p>, NO ids) and his
+   medium.en DTW JSON: 5202/5261 exact, 46 similar, 13 interpolated
+   singles; the broken turbo transcript still 92 % exact. 166k words in
+   1.1 s. FOUND: Gutenberg boilerplate (div.pg-boilerplate: header,
+   "*** START/END OF THE PROJECT GUTENBERG EBOOK ... ***", licence)
+   repeats the title and steals its times - the EPUB layer must leave it
+   out. NEXT: the EPUB layer (lib/, Delphi System.Zip / FPC zipper): read
+   OPF + spine, pick the spoken text (skip boilerplate, keep headings
+   such as the h1 title), split at white space and dashes, wrap words or
+   sentences in <span id>, write SMIL per XHTML, upgrade to EPUB 3
+   (version 3.0, nav document, media-overlay, media:duration, audio in
+   the package); numbers / abbreviations ("Mr", "XIV") as later
+   refinements. Then the cue builder for subtitles (below).
 4. FFmpeg input (mp3 / m4a / m4b) - needed for real audiobooks.
 5. Later: CUDA 12.9 + 13 fallback; NPU / OpenVINO (plans below).
 The owner said "no more backends yet".

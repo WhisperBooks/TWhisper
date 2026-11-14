@@ -35,6 +35,11 @@ model file, flash attention off) and prints every word with its start, end
 and probability; `--labels FILE` writes an Audacity label track instead,
 `--json FILE` segments and words as JSON (both imply `--words`); `--no-dtw`
 takes the times from whisper.cpp's token time stamps, to compare.
+`--no-flash` turns flash attention off without DTW (DTW always turns it
+off), to tell a difference caused by DTW from one caused by the different
+arithmetic. `--no-context` stops each 30 s window from being conditioned on
+the text before it, so a mistake cannot repeat from window to window.
+An unknown option starting with `-` is an error.
 
 **Checking word timings by ear:** open the WAV in Audacity, File > Import >
 Labels..., choose the labels file. Each word is a label over the audio:

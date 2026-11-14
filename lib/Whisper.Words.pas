@@ -32,8 +32,14 @@
       consisting of punctuation, starts a new word; others are appended.
       Chinese, Japanese, Thai, Lao, Burmese and Cantonese: every whole
       character piece is a word.)
+    @item(A word's times are those of its first and last token that is not
+      only punctuation: a closing '."' token runs on through the pause after
+      a sentence (seen on Aladdin with medium.en: 'Princess."' 1.9 s long),
+      so it does not count. (Not in OpenAI's code.))
     @item(The median word duration (at most 0.7 s) bounds words at
-      sentence ends.)
+      sentence ends. Unlike OpenAI, a word ENDING in a sentence mark before
+      closing quotes ('finger."') counts as a sentence end too, so the
+      first word after it cannot start in the pause.)
     @item(Opening punctuation is moved to the following word, closing
       punctuation to the previous one (keeping that word's times). Unlike
       OpenAI, a token made only of such marks ('!"', '."', '),') moves
@@ -216,6 +222,10 @@ const
     bracket and brace, ideographic comma. }
   APPEND_PUNCTUATION: array[0..16] of Cardinal = ($22, $27, $2E, $3002, $2C, $FF0C, $21, $FF01, $3F,
     $FF1F, $3A, $FF1A, $201D, $29, $5D, $7D, $3001);
+  { Closing marks that may follow a sentence mark at the end of a word:
+    double quote, apostrophe, right single and double quotation marks,
+    closing parenthesis, bracket and brace. }
+  CLOSING_MARKS: array[0..6] of Cardinal = ($22, $27, $2019, $201D, $29, $5D, $7D);
   { OpenAI's sentence_end_marks: '.', ideographic full stop, '!', fullwidth
     '!', '?', fullwidth '?'. }
   SENTENCE_END: array[0..5] of Cardinal = ($2E, $3002, $21, $FF01, $3F, $FF1F);
@@ -398,12 +408,55 @@ begin
   end;
 end;
 
+{ @true when C is one of ASet. }
+function CodeIn(C: Cardinal; const ASet: array of Cardinal): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 0 to High(ASet) do
+    if ASet[I] = C then
+      Result := True;
+end;
+
 { OpenAI's punctuation test ("AText in ASet"), widened to runs made only of
   set members, so that '!"', '."' and '),' (one token each, common in
   books) join their word too. }
 function IsPunctuationOf(const AText: TCodePoints; const ASet: array of Cardinal): Boolean;
 begin
   Result := IsIn(AText, ASet) or AllIn(AText, ASet);
+end;
+
+{ Forward: S without leading and trailing spaces. }
+function StripSpaces(const S: UTF8String): UTF8String; forward;
+
+{ @true for a token with no letters or digits: only punctuation of the
+  sets above (spaces aside). }
+function IsPunctuationToken(const S: UTF8String): Boolean;
+var
+  CP: TCodePoints;
+  I: Integer;
+begin
+  CP := CodePoints(StripSpaces(S));
+  Result := Length(CP) > 0;
+  for I := 0 to High(CP) do
+    if not (CodeIn(CP[I], ASCII_PUNCTUATION) or CodeIn(CP[I], PREPEND_PUNCTUATION) or
+      CodeIn(CP[I], APPEND_PUNCTUATION) or CodeIn(CP[I], CLOSING_MARKS)) then
+      Result := False;
+end;
+
+{ @true when a word ends a sentence: its last code point, closing quotes
+  and brackets skipped, is a sentence mark. }
+function EndsSentence(const S: UTF8String): Boolean;
+var
+  CP: TCodePoints;
+  I: Integer;
+begin
+  CP := CodePoints(StripSpaces(S));
+  I := High(CP);
+  while (I >= 0) and CodeIn(CP[I], CLOSING_MARKS) do
+    Dec(I);
+  Result := (I >= 0) and CodeIn(CP[I], SENTENCE_END);
 end;
 
 { S without leading and trailing spaces and control characters. }
@@ -591,7 +644,7 @@ end;
   split_tokens_on_spaces) and gives each its times and probability. }
 function SplitWords(const ATokens: TFlatTokenArray; ASpaces: Boolean): TWordWorkArray;
 var
-  Count, I, First, Tok, K: Integer;
+  Count, I, First, Tok, K, K0, K1: Integer;
   Piece: UTF8String;
   NewWord: Boolean;
   Sum: Double;
@@ -633,8 +686,20 @@ begin
   Tok := 0;
   for I := 0 to Count - 1 do
   begin
-    Result[I].T0 := ATokens[Tok].T0;
-    Result[I].T1 := ATokens[Tok + Result[I].TokenCount - 1].T1;
+    // the span of the tokens that are not only punctuation (all, if none)
+    K0 := Tok;
+    K1 := Tok + Result[I].TokenCount - 1;
+    while (K0 < K1) and IsPunctuationToken(ATokens[K0].Bytes) do
+      Inc(K0);
+    while (K1 > K0) and IsPunctuationToken(ATokens[K1].Bytes) do
+      Dec(K1);
+    if IsPunctuationToken(ATokens[K0].Bytes) then
+    begin
+      K0 := Tok;
+      K1 := Tok + Result[I].TokenCount - 1;
+    end;
+    Result[I].T0 := ATokens[K0].T0;
+    Result[I].T1 := ATokens[K1].T1;
     Sum := 0;
     for K := Tok to Tok + Result[I].TokenCount - 1 do
       Sum := Sum + ATokens[K].P;
@@ -871,7 +936,7 @@ begin
       begin
         if IsIn(CodePoints(W[I].Bytes), SENTENCE_END) then
           W[I].T1 := W[I].T0 + MaxDur
-        else if IsIn(CodePoints(W[I - 1].Bytes), SENTENCE_END) then
+        else if IsIn(CodePoints(W[I - 1].Bytes), SENTENCE_END) or EndsSentence(W[I - 1].Bytes) then
           W[I].T0 := W[I].T1 - MaxDur;
       end;
 
