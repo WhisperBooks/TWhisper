@@ -263,24 +263,15 @@ Copyright: Pooh text is UK public domain from 2027-01-01 (Milne d. 1956),
 Shepard's drawings until end of 2046, Disney's designs separately.
 
 ### AMD (HIP) and Intel Arc (SYCL / OpenVINO) - wait for testers
-Owner (2026-11-14): support them once someone can test. A friend has an AMD
-GPU (model unknown); same for Intel Arc. Until then Vulkan covers both.
-- HIP: use the HIP SDK 7.x (Windows 11 only; 6.4.2 was the last for Win10;
-  7.x renamed the runtime to amdhip64_7.dll / amd_comgr_3.dll - it comes
-  with the user's AMD driver, a too-old driver just means ggml-hip fails to
-  load and Vulkan remains). OFFICIAL 7.2 WINDOWS LIST (AMD's system
-  requirements page, docs-7.2): gfx1200 / gfx1201 (RX 9060 / 9070, AI PRO
-  R9700), gfx1100 / gfx1101 / gfx1102 (RX 7600-7900, PRO W7700-W7900),
-  gfx1150 (Ryzen AI 300, AI 9 400), gfx1151 (Ryzen AI Max 380-395,
-  MAX+ 49x). RDNA2 (RX 6000, gfx1030-1032) and older are UNSUPPORTED in
-  7.2 -> Vulkan for them. whisper-dev to-do: targets
-  gfx1100;gfx1101;gfx1102;gfx1150;gfx1151;gfx1200;gfx1201 (drop gfx1030), check the copied
-  library names against 7.x, README note. Z1 (gfx1103) is not on AMD's
-  Windows list.
-  Steam Machine (2026): discrete semi-custom RDNA3, 28 CU, 8 GB GDDR6 =
-  Navi 33 / gfx1102 (TechPowerUp, per owner) - the RX 7600's target, so a
-  gfx1102 HIP build should run on it under Windows; on SteamOS (Linux)
-  use Vulkan (RADV); ship the .so files beside the app (read-only OS).
+Owner (2026-11-14): support them once someone can test; Vulkan covers both
+until then.
+- HIP: EVERYTHING IS IN HIP.md (repository root) - HIP SDK 7.x facts,
+  AMD's official 7.2 list, laptops, the whisper-dev to-dos (new target
+  list without gfx1030, Windows DLL names, Linux bundling, gfx11-generic),
+  the Steam Machine Linux test procedure and results (HIP 28.1x vs Vulkan
+  22.7x on gfx1102 - HIP wins there, the opposite of the 5090 laptop), the
+  comparison with the 5090 and the open steps. Keep HIP.md up to date
+  instead of repeating it here.
 - Intel Arc: Vulkan now; candidates ggml-sycl (oneAPI DPC++ / icx: a
   second tree like HIP; large oneAPI runtime DLLs) and the OpenVINO GPU
   device (see NPU plan). The owner's Intel iGPU can do a first SYCL /
