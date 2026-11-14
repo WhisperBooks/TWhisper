@@ -416,8 +416,10 @@ type
     { @true while Load runs: log lines (ggml reporting the backends it
       loads or skips) go to LoadLog instead of stderr. }
     FCapturing: Boolean;
-    { Creates the object; Load does the work. }
-    constructor CreateLib;
+    { Creates the object; Load does the work. ADummy only makes the
+      signature differ from @link(Create)'s: C++Builder cannot tell two
+      parameterless constructors apart (W1029). }
+    constructor CreateLib(ADummy: Integer);
     { Loads the ggml libraries found in AFolder, in dependency order:
       ggml-base, then ggml; when ggml does not load (a build that links its
       backends in, whose backend libraries the OS does not find), the
@@ -713,7 +715,7 @@ begin
   raise EWhisperError.Create('Use TWhisperLib.Load to load the whisper.cpp library');
 end;
 
-constructor TWhisperLib.CreateLib;
+constructor TWhisperLib.CreateLib(ADummy: Integer);
 begin
   inherited Create;
   FDeps := TList.Create;
@@ -1078,7 +1080,7 @@ begin
   {$ifdef WHISPER_UNSUPPORTED_PLATFORM}
   raise EWhisperError.Create('whisper.cpp dynamic loading is not supported on this platform');
   {$endif}
-  Lib := TWhisperLib.CreateLib;
+  Lib := TWhisperLib.CreateLib(0);
   try
     Names := LibraryNames;
     Candidates := TStringList.Create;

@@ -127,7 +127,7 @@ speed never picks the model on its own (accuracy).
   even after a push. A corrected zip gets the NEXT number, never the old
   name; say which number it replaces. Every delivery says what it goes on
   top of: a zip number, or a commit when nothing is pending. Last number
-  used: 12. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
+  used: 13. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
   number in every zip that changes lib/ or the console (its first log
   line says which build made a log - owner was losing track, 20:26).
 - When the owner says a push is done: clone or fetch into a SEPARATE scratch
@@ -178,7 +178,9 @@ standard test because its EPUB text is known.
   tools/ffmpeg_layout.py). NOT YET PUSHED: TWhisper-11-drm.zip on
   3a92354 (DRM check, .aax in folders, Moment v10 notes);
   TWhisper-12-moved.zip on 11 (relocation pass, notes on Silverthorn /
-  Hobbit / Night Watch / GPU memory).
+  Hobbit / Night Watch / GPU memory); TWhisper-13-warnings.zip on 12
+  (Delphi warnings: W1029 TWhisperLib.CreateLib got a dummy parameter,
+  W1036 Span initialised in Whisper.Align).
 - redistributable_bin/ and *.dll are git-ignored ON PURPOSE (local copy of
   whisper-dev's dlls/; CUDA DLLs exceed GitHub's 100 MB limit). Ship
   binaries as a GitHub Release when needed.

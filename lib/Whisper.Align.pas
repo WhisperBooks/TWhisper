@@ -1237,6 +1237,7 @@ begin
       Inc(Right);
     Timed := (Left >= 0) and (Right <= High(AResult));
     Unheard := False;
+    Span := 0;
     if Timed then
     begin
       Run := Right - Left - 1;
