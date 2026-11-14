@@ -121,8 +121,137 @@ speed never picks the model on its own (accuracy).
     the default values tested at the end of TWhisperLib.CheckLayout).
 - Say IN CAPITALS when a package rebuild is needed.
 
-## Handover (2026-11-13, first session) - READ THIS FIRST
-State: complete first version, NOT YET COMPILED (no Delphi / FPC in the
+## Handover - READ THIS FIRST (latest: end of session 4, 2026-11-14 00:00)
+
+### What the project is for
+TWhisper (component TWhisperAPI) is the speech-to-text engine of a bigger
+project: SYNC EPUBS TO THEIR AUDIOBOOKS. Transcribe the audiobook (usually
+m4b), align the book's own EPUB text to it, and write EPUB 3 Media Overlays
+(SMIL <par>: text#id <-> audio clipBegin / clipEnd) so reading apps
+highlight the text as the audio plays. It is NOT karaoke (owner's
+correction). Amazon's version is trademarked "Whispersync for Voice" (and
+poor): never use that name for anything here. Second use: subtitles for
+YouTube videos. Both need ACCURATE WORD-LEVEL TIMINGS - whisper's segments
+are far too coarse (segment 1 of Aladdin spans 0-26 s across the LibriVox
+preamble, and segments break mid-sentence).
+The owner has many EPUBs with matching audiobooks - the real test set.
+"Aladdin" (LibriVox, 35 min, C:\audio\aladdin.wav, 8 kHz mono) is the
+standard test because its EPUB text is known.
+
+### State now
+- Windows (Delphi 13, Win64): packages, WhisperConsole and the FMX demo
+  build and run. ALL FMX DEMO TESTS PASSED: load, device list, whole
+  Aladdin (large-v3-turbo on CUDA0 106.9x, WAV read 3.0 s), cancel + save
+  SRT, benchmark selects the fastest device and Load uses it, closing
+  during a benchmark, settings restored.
+- Nothing tested yet on macOS / Linux / Android (Steam Deck = Linux test
+  box, AMD Z1 = Windows low-end box; both Vulkan).
+- Last push: 8ae84aa ("dlls"). NOT YET PUSHED (delivered in
+  TWhisper-settings.zip + this file): demos/WhisperDemo/src/uMain.pas
+  (settings saved as you go; Load / Benchmark disabled with no model),
+  CLAUDE.md. Clone a fresh copy and compare before the next delivery.
+- STALE FILES STILL IN THE REPO (pre-rename; owner to git rm):
+  Whisper.groupproj, packages/Whisper.dpk/.dproj,
+  packages/WhisperFMX.dpk/.dproj, packages/dclWhisperFMX.dpk/.dproj.
+- redistributable_bin/ and *.dll are git-ignored ON PURPOSE (local copy of
+  whisper-dev's dlls/; CUDA DLLs exceed GitHub's 100 MB limit). Ship
+  binaries as a GitHub Release when needed.
+
+### Owner's machine and data
+RTX 5090 laptop GPU (24 GB) + Intel iGPU + Core Ultra 9 275HX (24
+threads, has an Intel NPU), Win11, Delphi 13 (32-bit IDE: packages need
+Win32 builds), CUDA 13.2, VS 2026, Vulkan SDK 1.4.341.1 (fine: the needed
+glslc features are present - check the GL_* lines in the configure log
+before bothering with a newer SDK). whisper-dev at C:\src\whisper-dev,
+its dlls\ on PATH. Models: C:\models\whisper (10 models).
+Commands in READMEs: PowerShell needs the .\ prefix (.\WhisperConsole ...).
+
+### NEXT (agreed order)
+1. WORD-LEVEL TIMINGS: token timestamps + DTW (DtwPreset matching the
+   model), tokens joined into words (start / end), checked by ear against
+   Aladdin at several points, per model and setting. Then a word API on
+   TWhisperRun / TWhisperAPI and word output (JSON or similar).
+2. Small log tidy: the abort lines whisper.cpp logs after a cancel
+   ("encoder_begin_callback returned false - aborting", "failed to
+   decode", "failed to encode") show as ERROR - log them as info while a
+   cancel is pending; the "Transcription started" line says "language
+   auto" for .en models (the run is forced to en) - show the real one.
+3. EPUB alignment (EPUB = text of record; transcript only supplies the
+   times; handle numbers, names, headings, preambles), then XHTML ids +
+   SMIL + packaging; cue builder for subtitles (below).
+4. FFmpeg input (mp3 / m4a / m4b) - needed for real audiobooks.
+5. Later: CUDA 12.9 + 13 fallback; NPU / OpenVINO (plans below).
+The owner said "no more backends yet".
+
+## Plans (agreed, not started)
+
+### CUDA 12.9 + 13 fallback
+Build CUDA twice, 12.9 AND 13.latest, and fall back to 12.9 where 13
+cannot run (driver < 580, or a GPU before Turing / CC 7.5: CUDA 13 dropped
+Maxwell, Pascal, Volta - e.g. the owner's GTX 1650 mobile Linux box).
+ggml cannot choose between them itself (ggml-cuda has no
+ggml_backend_score; only the CPU variants do), so: whisper-dev builds 12.9
+in a second tree (like HIP) and names the outputs ggml-cuda-13.dll /
+ggml-cuda-12.dll (load_all skips both: no score); their runtimes share
+the folder (cudart64_13 / cublas64_13 vs cudart64_12 / cublas64_12);
+TWhisperLib.Load loads ggml-cuda-13 with ggml_backend_load, and when that
+fails or the backend has no device, ggml_backend_unload + ggml-cuda-12;
+LoadLog says which and why. Device names stay CUDA0, ... Also wanted:
+WHISPER_DEV_CUDA_ROOT (choose the toolkit; copy the runtime from it, not
+CUDA_PATH).
+
+### FFmpeg input
+mp3 / m4a / m4b (audiobooks are m4b; chapters matter for the EPUB audio
+files). Same dynamic-loading rules as everything else.
+
+### Subtitles (YouTube)
+Rebuild cues from words, not whisper's segments: break at sentence /
+clause ends, ~42 chars per line, max 2 lines, ~1-7 s per cue, readable
+speed; cue start = first word spoken, end = last word ended; clear the
+screen in silences. Same word-timing work as the EPUB sync.
+
+### NPU / OpenVINO (owner: "even cheap PCs now have NPU")
+Found in the pinned whisper.cpp (5922450):
+- Intel NPU: ggml/src/ggml-openvino is a real ggml backend, DL-loadable
+  (load_all_from_path tries "openvino", after vulkan, before cpu - so
+  CUDA / Vulkan stay whisper's default GPU). Needs the OpenVINO 2026.x
+  runtime (+ OpenCL) at build and its DLLs in dlls/ (large: ship as an
+  optional part). It registers every OpenVINO device (CPU, GPU.0, NPU) but
+  only the one named by env var GGML_OPENVINO_DEVICE (default CPU; read
+  ONCE at backend init) is typed GPU and runs ops; the others are typed
+  IGPU and run nothing. With the variable unset, "OpenVINO CPU" shows up
+  as a GPU device - filter or relabel it. A variable naming a device that
+  is not present is GGML_ABORT (the process dies): NEVER SET IT BLIND.
+  Plan: load with it unset, read the OpenVINO devices registered for
+  discovery, ggml_backend_unload the openvino reg, set the variable (NPU
+  if present, or the user's choice), ggml_backend_load ggml-openvino
+  again (FreeLibrary resets its statics); with nothing worth using, leave
+  it unloaded. Comparing NPU vs OpenVINO GPU = one process per choice.
+  OpenVINO GPU = Intel graphics only (might beat Vulkan on Intel iGPUs);
+  no NVIDIA / AMD GPU plugin; its CPU path is unlikely to beat ggml's.
+  whisper-dev: add WHISPER_DEV_OPENVINO (GGML_OPENVINO=ON) + copy the
+  runtime DLLs.
+- AMD NPU (Ryzen AI 300 only, Windows): src/vitisai, WHISPER_VITISAI,
+  encoder only, per-model .rai file next to the .bin, Ryzen AI runtime.
+  Untestable here. The Z1 / Steam Deck do not qualify (Vulkan there).
+- Old encoder-only OpenVINO path (WHISPER_OPENVINO + per-model IR,
+  whisper_ctx_init_openvino_encoder): skip, the ggml backend replaces it.
+- Qualcomm (ggml-hexagon): Windows-on-ARM, no Delphi target known: skip.
+- NPUs suit the encoder; decoding is most of the time (Aladdin on GPU:
+  encode 3.2 s vs decode 10.4 s) and small-batch, so expect power savings
+  more than speed - measure with the benchmark.
+- BLAS (WHISPER_DEV_BLAS, off): worth one measured build; usually little
+  gain on a modern CPU. Quantised models (q5_0 / q8_0) are the bigger CPU
+  win - benchmark them, and check their word-timing accuracy.
+
+### Other open items
+WhisperConsole --check on each platform; macOS dyld reuse of preloaded
+dylibs (else build with @loader_path rpath, README); the Android library
+folder (bare-name load path); a VCL twin; the token-data shim on ARM64
+(compiler record return, as TSteamAPI's Motion shim).
+
+## History (sessions 1-4, newest last)
+Session 1 (2026-11-13): complete first version, NOT YET COMPILED (no Delphi / FPC in the
 cloud workspace). Verified here, without a Pascal compiler:
 - clang, 9 targets: record sizes / offsets of every bound struct (written to
   Whisper.Layout.inc; the Pascal records, the CheckLayout list and the
@@ -182,26 +311,6 @@ mislead). Found: reading + resampling the 35-min WAV took ~50 s (Sin / Cos
 per tap and output sample) - resampler now table-driven (RESAMPLE_PHASES,
 max deviation from the exact filter ~1e-3, exact for 8 -> 16 kHz); read
 time now logged.
-Owner's plan: FFmpeg for mp3 / m4a / m4b (audiobooks are m4b) - later.
-Owner's plan (later): build CUDA twice, 12.9 AND 13.latest, and fall back
-to 12.9 where 13 cannot run (driver < 580, or a GPU before Turing / CC 7.5:
-CUDA 13 dropped Maxwell, Pascal, Volta). ggml cannot choose between them
-itself (ggml-cuda has no ggml_backend_score; only the CPU variants do), so:
-whisper-dev builds 12.9 in a second tree (like HIP) and names the outputs
-ggml-cuda-13.dll / ggml-cuda-12.dll (load_all skips both: no score);
-their runtimes share the folder (cudart64_13 / cublas64_13 vs
-cudart64_12 / cublas64_12); TWhisperLib.Load loads ggml-cuda-13 with
-ggml_backend_load, and when that fails or the backend has no device,
-ggml_backend_unload + ggml-cuda-12; LoadLog says which and why. Device
-names stay CUDA0, ... Also wanted: WHISPER_DEV_CUDA_ROOT (choose the
-toolkit; copy the runtime from it, not CUDA_PATH).
-Open: first Delphi compile (open WhisperAPI.groupproj, Build All, Win64); run
-whisper-dev build.bat, WhisperConsole --check (device list), --bench;
-WhisperConsole --check on each platform; macOS dyld reuse of preloaded
-dylibs (else build with @loader_path rpath, README); the Android library
-folder (bare-name load path); a VCL twin; the token-data shim on ARM64
-(compiler record return, as TSteamAPI's Motion shim).
-
 Session 4 (FMX demo): the owner already has another component called
 TWhisper (its package also clashes), so ours is renamed: component
 TWhisperAPI (demo instance WhisperAPI1), packages WhisperAPI /
@@ -217,3 +326,10 @@ Missing <TargetedPlatforms> in every .dproj: the IDE showed only the
 default platform (no Win32 for the 32-bit IDE). gen_projects.py now writes
 it (values from TSteamAPI: 3 = Win32+Win64, 168067 = packages' six,
 135296 = apps' Win64/OSX64/OSXARM64/Linux64).
+Session 4 tests: cancel + save passed (17 segments as SRT); settings
+first failed (ModelFolder not kept - OnClose skipped when stopped from the
+IDE), fixed by saving on every choice / run start; then ALL FMX TESTS
+PASSED (benchmark medium.en, 30 s: CUDA0 15.3x, Vulkan0 11.4x, Vulkan1
+2.3x, CPU 2.1x; earlier large-v3-turbo 30 s: CUDA0 24.5x, Vulkan0 14.6x -
+30 s figures swing with warm-up / language detection; whole-file runs are
+the fair comparison).

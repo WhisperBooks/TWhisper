@@ -141,7 +141,9 @@ type
     function SettingsFile: string;
     { Reads the settings. }
     procedure LoadSettings;
-    { Writes the settings. }
+    { Writes the settings: on closing and whenever a model, an audio file or
+      a device is chosen or a run starts (a run stopped from the IDE never
+      calls OnClose). }
     procedure SaveSettings;
   end;
 
@@ -304,11 +306,11 @@ end;
 procedure TfrmMain.UpdateControls;
 begin
   btnLoad.Text := IfThen(WhisperAPI1.Active, 'Unload model', 'Load model');
-  btnLoad.Enabled := not WhisperAPI1.Busy;
+  btnLoad.Enabled := not WhisperAPI1.Busy and (WhisperAPI1.Active or (cbModel.ItemIndex >= 0));
   cbModel.Enabled := not WhisperAPI1.Active;
   btnModel.Enabled := not WhisperAPI1.Active;
   cbDevice.Enabled := not WhisperAPI1.Active;
-  btnBenchmark.Enabled := not WhisperAPI1.Busy;
+  btnBenchmark.Enabled := not WhisperAPI1.Busy and (cbModel.ItemIndex >= 0);
   btnTranscribe.Enabled := WhisperAPI1.Active and not WhisperAPI1.Busy;
   btnCancel.Enabled := WhisperAPI1.Busy;
   btnSave.Enabled := (Length(FSegments) > 0) and not WhisperAPI1.Busy;
@@ -397,7 +399,11 @@ begin
   OpenDialog1.Filter := 'ggml models (*.bin)|*.bin|All files (*.*)|*.*';
   OpenDialog1.FileName := SelectedModel;
   if OpenDialog1.Execute then
+  begin
     FillModels(ExtractFilePath(OpenDialog1.FileName), ExtractFileName(OpenDialog1.FileName));
+    SaveSettings;
+  end;
+  UpdateControls;
 end;
 
 procedure TfrmMain.btnAudioClick(Sender: TObject);
@@ -405,7 +411,10 @@ begin
   OpenDialog1.Filter := 'WAV files (*.wav)|*.wav|All files (*.*)|*.*';
   OpenDialog1.FileName := edAudio.Text;
   if OpenDialog1.Execute then
+  begin
     edAudio.Text := OpenDialog1.FileName;
+    SaveSettings;
+  end;
 end;
 
 procedure TfrmMain.btnLoadClick(Sender: TObject);
@@ -414,6 +423,7 @@ begin
     WhisperAPI1.Active := False
   else
   begin
+    SaveSettings;
     WhisperAPI1.ModelFile := SelectedModel;
     WhisperAPI1.Device := SelectedDevice;
     AddLog('Loading ' + WhisperAPI1.ModelFile);
@@ -430,6 +440,7 @@ begin
   if cbLanguage.ItemIndex >= 0 then
     WhisperAPI1.Language := cbLanguage.Items[cbLanguage.ItemIndex];
   WhisperAPI1.Translate := chkTranslate.IsChecked;
+  SaveSettings;
   try
     WhisperAPI1.TranscribeFileAsync(edAudio.Text);
     lblStatus.Text := 'Running';
@@ -475,6 +486,7 @@ begin
   if cbLanguage.ItemIndex >= 0 then
     WhisperAPI1.Language := cbLanguage.Items[cbLanguage.ItemIndex];
   WhisperAPI1.Translate := chkTranslate.IsChecked;
+  SaveSettings;
   Models := TStringList.Create;
   try
     if chkAllModels.IsChecked then
@@ -529,6 +541,7 @@ begin
     memText.Lines.Add(Format('Selected: %s on %s (%.2fx real time)%s', [ExtractFileName(AResults[ABest].ModelFile),
       AResults[ABest].Device.Name, AResults[ABest].Speed,
       IfThen(WhisperAPI1.Active, ' - unload and load the model to use it', '')]));
+    SaveSettings;
   end
   else
     memText.Lines.Add('No device succeeded');
