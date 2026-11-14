@@ -47,6 +47,13 @@ SUBMODULE_PACKAGES = [("FFmpegAPI", "FFmpegAPI\\packages"),
                       ("FFmpegAPIFMX", "FFmpegAPI\\packages"),
                       ("dclFFmpegAPIFMX", "FFmpegAPI\\packages")]
 
+# OWNER'S GROUP ORDER (2026-11-14 22:56, commit 1cac2e7 "Package Order", as
+# saved by the IDE): plain runtime packages, then FMX runtime packages, then
+# design packages, then applications. Build / Clean / Make use the same
+# order. tools/project_check.py checks the tiers and the requires order.
+GROUP_ORDER = ["FFmpegAPI", "WhisperAPI", "WhisperAPIFMX", "FFmpegAPIFMX", "dclFFmpegAPIFMX",
+               "dclWhisperAPIFMX", "WhisperDemo", "WhisperConsole"]
+
 PROJECTS = [
     # The demos use the library like any user project: its DCUs come from the
     # runtime packages' output in Delphi's Dcp folder (default Library path),
@@ -296,22 +303,18 @@ def groupproj():
     L = ['<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">',
          '    <PropertyGroup>', f'        <ProjectGuid>{guid}</ProjectGuid>', '    </PropertyGroup>',
          '    <ItemGroup>']
-    # OWNER'S ORDER (2026-11-14, as saved by the IDE): runtime packages
-    # (the submodules' FFmpegAPI, then WhisperAPI, then WhisperAPIFMX), then the design package, then the
-    # applications - in the Projects window AND in the Build / Clean / Make
-    # targets. Build All then compiles a package before everything that
-    # needs it, and Delphi's quick re-compilation works; another order
-    # breaks builds. No <Dependencies> (the owner's saved file has none):
-    # the order is the dependency. tools/project_check.py checks it.
-    rank_show = {"runtime": 0, "design": 1, "app": 2, "console": 2}
-    rank_build = rank_show
-    fw = lambda p: {"None": 0, "FMX": 1, "VCL": 2}.get(p["framework"], 3) \
-        if p["kind"] in ("runtime", "design") else 0
-    ordered = sorted(PROJECTS, key=lambda p: (rank_show[p["kind"]], fw(p)))
-    build_order = sorted(PROJECTS, key=lambda p: (rank_build[p["kind"]], fw(p)))
-    sub = [dict(name=n, dir=d) for n, d in SUBMODULE_PACKAGES]
-    ordered = sub + ordered
-    build_order = sub + build_order
+    # GROUP_ORDER (above) in the Projects window AND in the Build / Clean /
+    # Make targets: Build All then compiles a package before everything that
+    # needs it, and Delphi's quick re-compilation works; another order breaks
+    # builds. No <Dependencies> (the owner's saved file has none): the order
+    # is the dependency.
+    every = {p["name"]: p for p in PROJECTS}
+    every.update({n: dict(name=n, dir=d) for n, d in SUBMODULE_PACKAGES})
+    missing = set(every) ^ set(GROUP_ORDER)
+    if missing:
+        raise SystemExit(f"GROUP_ORDER and the projects differ: {sorted(missing)}")
+    ordered = [every[n] for n in GROUP_ORDER]
+    build_order = ordered
     for p in ordered:
         rel = f"{p['dir']}\\{p['name']}.dproj"
         L += [f'        <Projects Include="{rel}">', '            <Dependencies/>', '        </Projects>']

@@ -1,10 +1,13 @@
-{ @abstract(Main form of WhisperDemo: model, WAV and compute-device
+{ @abstract(Main form of WhisperDemo: model, audio and compute-device
   selection, a device benchmark, transcription on a worker thread with live
   segments, progress and the library log, word timings, and export as text /
   SubRip / WebVTT, and the words as an Audacity label track or JSON.)
 
   The TWhisperAPI component (WhisperAPI1) and its events are set up in
-  uMain.fmx; only the settings file and the language list are handled in
+  uMain.fmx, and so is TFFmpegAPI (FFmpegAPI1, from the FFmpegAPI
+  submodule): a WAV file goes straight to WhisperAPI1, any other audio
+  (MP3, M4A / M4B, FLAC, Ogg, ...) is decoded by FFmpegAPI1 to 16 kHz mono
+  on its worker thread first; only the settings file and the language list are handled in
   FormCreate. Settings (model, audio file, language, options) are kept per
   user in SettingsFolder + WhisperDemo.ini, never next to the executable. }
 unit uMain;
@@ -17,13 +20,16 @@ uses
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Dialogs, FMX.StdCtrls,
   FMX.Edit, FMX.ListBox, FMX.Memo, FMX.Memo.Types, FMX.Layouts,
   FMX.Controls.Presentation, FMX.ScrollBox,
-  Whisper.Types, Whisper.API, Whisper.Words, Whisper.Core, Whisper.Components, Whisper.FMX;
+  Whisper.Types, Whisper.API, Whisper.Words, Whisper.Core, Whisper.Components, Whisper.FMX,
+  FFmpeg.API, FFmpeg.Media, FFmpeg.Components, FFmpeg.FMX;
 
 type
   { The demo's main form. }
   TfrmMain = class(TForm)
     { The whisper.cpp component. }
     WhisperAPI1: TWhisperAPI;
+    { The FFmpeg component: decodes audio other than WAV (16 kHz mono). }
+    FFmpegAPI1: TFFmpegAPI;
     { Top panel with the settings and buttons. }
     layTop: TLayout;
     { Caption of cbModel. }
@@ -34,9 +40,9 @@ type
     btnModel: TButton;
     { Caption of edAudio. }
     lblAudio: TLabel;
-    { WAV file to transcribe. }
+    { Audio file to transcribe (WAV, or anything FFmpeg reads). }
     edAudio: TEdit;
-    { Browses for the WAV file. }
+    { Browses for the audio file. }
     btnAudio: TButton;
     { Caption of cbLanguage. }
     lblLanguage: TLabel;
@@ -114,6 +120,14 @@ type
     procedure WhisperAPI1Complete(Sender: TObject; const AResult: TWhisperTranscription);
     { A log line. }
     procedure WhisperAPI1Log(Sender: TObject; ALevel: TWhisperLogLevel; const AText: string);
+    { FFmpeg opened the audio: logs the libraries and what the file holds. }
+    procedure FFmpegAPI1Open(Sender: TObject);
+    { FFmpeg could not open the audio (missing libraries, copy protected, ...). }
+    procedure FFmpegAPI1OpenFailed(Sender: TObject; const AMessage: string);
+    { The audio is decoded: starts the transcription or the benchmark. }
+    procedure FFmpegAPI1Decoded(Sender: TObject; const ASamples: TFFmpegSamples; AStart, AEnd: Double);
+    { Decoding failed. }
+    procedure FFmpegAPI1DecodeFailed(Sender: TObject; const AMessage: string);
   private
     { Segments of the last run (for Save). }
     FSegments: TWhisperSegmentArray;
@@ -123,6 +137,17 @@ type
     FDeviceNames: TStringList;
     { Folder of the models listed in cbModel. }
     FModelFolder: string;
+    { The decode in progress is for the benchmark (else a transcription). }
+    FDecodeForBenchmark: Boolean;
+    { Cancel was pressed while FFmpegAPI1 was decoding. }
+    FDecodeCancelled: Boolean;
+    { Models to benchmark once the audio is decoded. }
+    FBenchModels: TStringList;
+    { True when AFileName is a WAV file (read without FFmpeg). }
+    function IsWav(const AFileName: string): Boolean;
+    { Opens edAudio.Text with FFmpegAPI1 and decodes 0..AEnd s (0 = all) on
+      its worker thread; OnDecoded goes on. False when it cannot open. }
+    function StartDecode(AForBenchmark: Boolean; AEnd: Double): Boolean;
     { Lists the ggml-*.bin models of AFolder in cbModel and selects ASelect
       (a file name; '' = the first). }
     procedure FillModels(const AFolder, ASelect: string);
@@ -184,6 +209,10 @@ const
   FILTER_LABELS = 4;
   { FilterIndex of the word JSON in SAVE_FILTER. }
   FILTER_JSON = 5;
+  { Open dialog filter of the audio. }
+  AUDIO_FILTER = 'Audio (*.wav, *.mp3, *.m4a, *.m4b, *.flac, *.ogg, *.opus)|' +
+    '*.wav;*.mp3;*.m4a;*.m4b;*.aax;*.aac;*.flac;*.ogg;*.oga;*.opus;*.wma;*.mp4;*.mkv;*.webm|' +
+    'WAV files (*.wav)|*.wav|All files (*.*)|*.*';
 
 procedure TfrmMain.FormCreate(Sender: TObject);
 var
@@ -206,6 +235,7 @@ begin
   end;
   cbLanguage.ItemIndex := 0;
   FDeviceNames := TStringList.Create;
+  FBenchModels := TStringList.Create;
   FillDevices;
   LoadSettings;
   UpdateControls;
@@ -215,7 +245,9 @@ procedure TfrmMain.FormClose(Sender: TObject; var Action: TCloseAction);
 begin
   SaveSettings;
   WhisperAPI1.Cancel;
+  FFmpegAPI1.Active := False;   // waits for a decode and drops its result
   FreeAndNil(FDeviceNames);
+  FreeAndNil(FBenchModels);
 end;
 
 procedure TfrmMain.FillModels(const AFolder, ASelect: string);
@@ -323,9 +355,9 @@ begin
   btnModel.Enabled := not WhisperAPI1.Active;
   cbDevice.Enabled := not WhisperAPI1.Active;
   chkWords.Enabled := not WhisperAPI1.Active;
-  btnBenchmark.Enabled := not WhisperAPI1.Busy and (cbModel.ItemIndex >= 0);
-  btnTranscribe.Enabled := WhisperAPI1.Active and not WhisperAPI1.Busy;
-  btnCancel.Enabled := WhisperAPI1.Busy;
+  btnBenchmark.Enabled := not WhisperAPI1.Busy and not FFmpegAPI1.Busy and (cbModel.ItemIndex >= 0);
+  btnTranscribe.Enabled := WhisperAPI1.Active and not WhisperAPI1.Busy and not FFmpegAPI1.Busy;
+  btnCancel.Enabled := WhisperAPI1.Busy or FFmpegAPI1.Busy;
   btnSave.Enabled := (Length(FSegments) > 0) and not WhisperAPI1.Busy;
 end;
 
@@ -423,7 +455,7 @@ end;
 
 procedure TfrmMain.btnAudioClick(Sender: TObject);
 begin
-  OpenDialog1.Filter := 'WAV files (*.wav)|*.wav|All files (*.*)|*.*';
+  OpenDialog1.Filter := AUDIO_FILTER;
   OpenDialog1.FileName := edAudio.Text;
   if OpenDialog1.Execute then
   begin
@@ -458,6 +490,12 @@ begin
     WhisperAPI1.Language := cbLanguage.Items[cbLanguage.ItemIndex];
   WhisperAPI1.Translate := chkTranslate.IsChecked;
   SaveSettings;
+  if not IsWav(edAudio.Text) then
+  begin
+    StartDecode(False, 0);   // OnDecoded starts the transcription
+    UpdateControls;
+    Exit;
+  end;
   try
     WhisperAPI1.TranscribeFileAsync(edAudio.Text);
     lblStatus.Text := 'Running';
@@ -471,7 +509,39 @@ end;
 procedure TfrmMain.btnCancelClick(Sender: TObject);
 begin
   AddLog('Cancel requested');
+  if FFmpegAPI1.Busy then
+  begin
+    FDecodeCancelled := True;
+    FFmpegAPI1.CancelDecode;
+  end;
   WhisperAPI1.Cancel;
+end;
+
+function TfrmMain.IsWav(const AFileName: string): Boolean;
+begin
+  Result := SameText(ExtractFileExt(AFileName), '.wav');
+end;
+
+function TfrmMain.StartDecode(AForBenchmark: Boolean; AEnd: Double): Boolean;
+begin
+  FDecodeForBenchmark := AForBenchmark;
+  FDecodeCancelled := False;
+  FFmpegAPI1.Active := False;
+  FFmpegAPI1.FileName := edAudio.Text;
+  FFmpegAPI1.Active := True;   // a failure goes to OnOpenFailed
+  Result := FFmpegAPI1.Active;
+  if not Result then
+    Exit;
+  try
+    FFmpegAPI1.DecodeAsync(0, AEnd);
+    lblStatus.Text := 'Decoding';
+  except
+    on E: Exception do
+    begin
+      AddLog('Cannot decode: ' + E.Message);
+      Result := False;
+    end;
+  end;
 end;
 
 procedure TfrmMain.btnSaveClick(Sender: TObject);
@@ -530,13 +600,20 @@ begin
     memText.Lines.Clear;
     memText.Lines.Add(Format('Benchmark: %d model(s), first %d s of %s on every device',
       [Models.Count, BENCHMARK_SECONDS, ExtractFileName(edAudio.Text)]));
-    try
-      WhisperAPI1.BenchmarkFileAsync(edAudio.Text, BENCHMARK_SECONDS, nil, Models);
-      lblStatus.Text := 'Benchmark';
-    except
-      on E: Exception do
-        AddLog('Cannot start the benchmark: ' + E.Message);
-    end;
+    if not IsWav(edAudio.Text) then
+    begin
+      // decode just what is timed; OnDecoded starts the benchmark
+      FBenchModels.Assign(Models);
+      StartDecode(True, BENCHMARK_SECONDS);
+    end
+    else
+      try
+        WhisperAPI1.BenchmarkFileAsync(edAudio.Text, BENCHMARK_SECONDS, nil, Models);
+        lblStatus.Text := 'Benchmark';
+      except
+        on E: Exception do
+          AddLog('Cannot start the benchmark: ' + E.Message);
+      end;
   finally
     Models.Free;
   end;
@@ -646,6 +723,64 @@ begin
     AddLog(LEVEL_NAMES[ALevel] + ': ' + AText)
   else
     AddLog(AText);
+end;
+
+procedure TfrmMain.FFmpegAPI1Open(Sender: TObject);
+var
+  Ch: TFFmpegChapterArray;
+begin
+  AddLog(FFmpegAPI1.Description);
+  if FFmpegAPI1.Lib.Warning <> '' then
+    AddLog('WARNING: ' + FFmpegAPI1.Lib.Warning);
+  Ch := FFmpegAPI1.Chapters;
+  AddLog(Format('%s: %s, %d chapter(s)', [ExtractFileName(FFmpegAPI1.FileName),
+    WhisperTimeToStr(Round(FFmpegAPI1.Duration * 100)), Length(Ch)]));
+  if Length(Ch) > 0 then
+    AddLog('An audiobook is best transcribed a chapter at a time: WhisperConsole --chapters');
+end;
+
+procedure TfrmMain.FFmpegAPI1OpenFailed(Sender: TObject; const AMessage: string);
+begin
+  AddLog('Cannot open the audio: ' + AMessage);
+  lblStatus.Text := 'Failed';
+  UpdateControls;
+end;
+
+procedure TfrmMain.FFmpegAPI1Decoded(Sender: TObject; const ASamples: TFFmpegSamples; AStart, AEnd: Double);
+var
+  Samples: TWhisperSamples;
+begin
+  if FDecodeCancelled then
+  begin
+    lblStatus.Text := 'Cancelled';
+    UpdateControls;
+    Exit;
+  end;
+  Samples := TWhisperSamples(ASamples);   // both are array of Single
+  AddLog(Format('Decoded %.1f s with FFmpeg', [Length(Samples) / WHISPER_SAMPLE_RATE]));
+  try
+    if FDecodeForBenchmark then
+    begin
+      WhisperAPI1.BenchmarkAsync(Samples, BENCHMARK_SECONDS, nil, FBenchModels);
+      lblStatus.Text := 'Benchmark';
+    end
+    else
+    begin
+      WhisperAPI1.TranscribeAsync(Samples);
+      lblStatus.Text := 'Running';
+    end;
+  except
+    on E: Exception do
+      AddLog('Cannot start: ' + E.Message);
+  end;
+  UpdateControls;
+end;
+
+procedure TfrmMain.FFmpegAPI1DecodeFailed(Sender: TObject; const AMessage: string);
+begin
+  AddLog('Decoding failed: ' + AMessage);
+  lblStatus.Text := 'Failed';
+  UpdateControls;
 end;
 
 end.

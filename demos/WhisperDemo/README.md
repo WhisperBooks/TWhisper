@@ -1,16 +1,18 @@
 # WhisperDemo - running and deploying (Windows)
 
 FireMonkey demo of TWhisperAPI: choose a model and a compute device, benchmark
-the devices, transcribe a WAV file, save SubRip / WebVTT / text, and with
+the devices, transcribe an audio file (a WAV directly; MP3, M4A / M4B, FLAC,
+Ogg, ... through the TFFmpegAPI component of the FFmpegAPI submodule, which
+decodes it to 16 kHz mono on a worker thread), save SubRip / WebVTT / text, and with
 "Word timings" save the words as an Audacity label track or JSON.
 
 ## Before the first build
 
 The demo uses the library like any user project: build the runtime packages
-**WhisperAPI** and **WhisperAPIFMX** for the same platform first (open
-`WhisperAPI.groupproj` at the repository root and build all - it builds the
-packages before the demos). Opening the form in the designer needs
-**dclWhisperAPIFMX** installed.
+**FFmpegAPI**, **WhisperAPI**, **WhisperAPIFMX** and **FFmpegAPIFMX** for the
+same platform first (open `WhisperAPI.groupproj` at the repository root and
+build all - it builds the packages before the demos). Opening the form in the
+designer needs **dclWhisperAPIFMX** and **dclFFmpegAPIFMX** installed.
 
 ## Next to WhisperDemo.exe
 
@@ -25,6 +27,7 @@ Everything from **whisper-dev's `dlls\` folder** (github.com/WhisperBooks/whispe
 | `ggml-vulkan.dll` | Vulkan backend (`vulkan-1.dll` comes with the GPU driver) |
 | `ggml-hip.dll`, `hipblas.dll`, `rocblas.dll`, `rocblas\library\` | AMD HIP backend, if built |
 | `msvcp140.dll`, `vcruntime140*.dll`, `vcomp140.dll` | MSVC + OpenMP runtime |
+| `avutil-60.dll`, `swresample-6.dll`, `avcodec-62.dll`, `avformat-62.dll` | FFmpeg 8 (a "shared" build) - only for audio other than WAV |
 
 Instead of copying, the folder can be on PATH (TWhisperAPI locates the library
 and loads the backends from its folder) - copying is what a release ships.

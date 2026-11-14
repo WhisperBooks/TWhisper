@@ -53,8 +53,22 @@ speed never picks the model on its own (accuracy).
   directly; AudioSet turns EFFmpegError into EWhisperError. Package
   WhisperAPI requires FFmpegAPI. All three FFmpegAPI packages (FFmpegAPI,
   FFmpegAPIFMX, dclFFmpegAPIFMX - owner 2026-11-14: TFFmpegAPI "needs it's
-  own palette and package": palette page "FFmpegAPI") come first in
+  own palette and package": palette page "FFmpegAPI") are in
   WhisperAPI.groupproj (gen_projects.py SUBMODULE_PACKAGES).
+- GROUP ORDER (owner, 2026-11-14 22:56, commit 1cac2e7 "Package Order",
+  saved by the IDE - KEEP IT): FFmpegAPI, WhisperAPI, WhisperAPIFMX,
+  FFmpegAPIFMX, dclFFmpegAPIFMX, dclWhisperAPIFMX, WhisperDemo,
+  WhisperConsole - in tiers: plain runtime packages, FMX runtime packages,
+  design packages, applications; Build / Clean / Make the same.
+  gen_projects.py GROUP_ORDER writes exactly this (checked: identical to
+  1cac2e7); project_check.py fails on a lower tier after a higher one, a
+  package before what it requires, or targets in another order.
+- WhisperDemo has FFmpegAPI1 (TFFmpegAPI, 16 kHz mono) on its form (owner,
+  22:57: "nice if the FFMprg component were on the FMX Form"): a WAV goes
+  to WhisperAPI1 as before; other audio is opened and decoded by
+  FFmpegAPI1 on its worker thread, then OnDecoded starts TranscribeAsync
+  (or BenchmarkAsync on the first BENCHMARK_SECONDS). The whole file is
+  decoded: for long audiobooks the console's --chapters is the way.
   FPC builds need FFmpegAPI/lib on the unit path.
 - The FIELDS table of tools/verify_layout.py, the record declarations in
   Whisper.Types and the Add(...) list of TWhisperLib.CheckLayout must list
@@ -137,7 +151,7 @@ speed never picks the model on its own (accuracy).
   even after a push. A corrected zip gets the NEXT number, never the old
   name; say which number it replaces. Every delivery says what it goes on
   top of: a zip number, or a commit when nothing is pending. Last number
-  used: 15. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
+  used: 16. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
   number in every zip that changes lib/ or the console (its first log
   line says which build made a log - owner was losing track, 20:26).
 - When the owner says a push is done: clone or fetch into a SEPARATE scratch
@@ -182,14 +196,14 @@ standard test because its EPUB text is known.
   real speech: lib/Whisper.Words (new unit), WordTimestamps on the
   component, IncludeWords on TWhisperRun, console --words / --labels /
   --json / --no-dtw, demo "Word timings" + save as Audacity labels / JSON.
-- Last push: c07b0cc ("Integrte", 2026-11-14 ~22:43; checked: the 9 files
-  of zip 14 identical apart from line endings; before it 0aa0b87 "v13" =
-  zips 11-13, and f7a5f93 added the FFmpegAPI submodule at 3a9dd6e, all
-  checked). NOT YET PUSHED: TWhisper-15-noffmpeg.zip on c07b0cc
-  (lib/Whisper.FFmpeg removed; AudioSet and console use the submodule
-  directly). Files to DELETE in the repo with it: lib/Whisper.FFmpeg.pas,
-  lib/Whisper.FFmpegLayout.inc, tools/ffmpeg_layout.py (the last two were
-  left behind by zip 14).
+- Last push: 1cac2e7 ("Package Order", 2026-11-14 ~22:56: the owner's
+  group order, see GROUP ORDER). Before it 48a269b "No FFMpeg" = zip 15
+  (checked: 8 files identical apart from line endings, the 3 files
+  deleted; a fresh clone with the submodule at 3a9dd6e passes the checks
+  and builds with FPC), c07b0cc = zip 14, 0aa0b87 = zips 11-13, f7a5f93
+  added the submodule - all checked. NOT YET PUSHED:
+  TWhisper-16-demoffmpeg.zip on 1cac2e7 (GROUP_ORDER in gen_projects.py,
+  tier check in project_check.py, FFmpegAPI1 on WhisperDemo's form).
 - redistributable_bin/ and *.dll are git-ignored ON PURPOSE (local copy of
   whisper-dev's dlls/; CUDA DLLs exceed GitHub's 100 MB limit). Ship
   binaries as a GitHub Release when needed.

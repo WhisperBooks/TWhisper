@@ -49,7 +49,7 @@ object frmMain: TfrmMain
       Size.Width = 88.000000000000000000
       Size.Height = 22.000000000000000000
       Size.PlatformDefault = False
-      Text = 'Audio (WAV)'
+      Text = 'Audio'
     end
     object edAudio: TEdit
       Anchors = [akLeft, akTop, akRight]
@@ -240,6 +240,16 @@ object frmMain: TfrmMain
     OnBenchmarkComplete = WhisperAPI1BenchmarkComplete
     Left = 848
     Top = 168
+  end
+  object FFmpegAPI1: TFFmpegAPI
+    SampleRate = 16000
+    Channels = 1
+    OnOpen = FFmpegAPI1Open
+    OnOpenFailed = FFmpegAPI1OpenFailed
+    OnDecoded = FFmpegAPI1Decoded
+    OnDecodeFailed = FFmpegAPI1DecodeFailed
+    Left = 848
+    Top = 360
   end
   object OpenDialog1: TOpenDialog
     Left = 848

@@ -9,13 +9,14 @@ For every .dproj / .groupproj under the repository:
   * the .pas units of the .dproj match the "in '...'" units of the
     .dpr / .dpk (same set, compared case-insensitively);
   * every project in a .groupproj exists;
-  * BUILD ORDER of WhisperAPI.groupproj (owner's rule, 2026-11-14): every
-    package after the packages it requires (the FFmpegAPI submodule's
-    FFmpegAPI, then WhisperAPI, WhisperAPIFMX, then the design package
-    dclWhisperAPIFMX), every application after all
-    packages, and the Build / Clean / Make targets in the same order as the
-    Projects list - another order breaks Build All and Delphi's quick
-    re-compilation;
+  * BUILD ORDER of every .groupproj (owner's rule, 2026-11-14; TWhisper's
+    order as saved in commit 1cac2e7): in tiers - plain runtime packages
+    (FFmpegAPI, WhisperAPI), then FMX runtime packages (WhisperAPIFMX,
+    FFmpegAPIFMX), then design packages (dclFFmpegAPIFMX,
+    dclWhisperAPIFMX), then applications; every package after the
+    packages it requires; and the Build / Clean / Make targets in the same
+    order as the Projects list - another order breaks Build All and
+    Delphi's quick re-compilation;
   * no demo source includes Whisper.inc (demos have no path to lib/);
   * no source spells a constant in two ways (Pascal ignores case).
 
@@ -48,12 +49,32 @@ def package_requires(dpk):
     return [n.strip().lower() for n in m.group(1).split(",")] if m else []
 
 
+TIER_NAMES = ["plain runtime package", "FMX runtime package", "design package", "application"]
+
+
+def tier(dproj):
+    """0 plain runtime, 1 FMX runtime, 2 design package, 3 application."""
+    dpk = os.path.splitext(dproj)[0] + ".dpk"
+    if not os.path.exists(dpk):
+        return 3
+    req = package_requires(dpk)
+    if "designide" in req:
+        return 2
+    return 1 if ("fmx" in req or "vcl" in req) else 0
+
+
 def check_group_order(rel, order, tree):
-    """Packages after what they require, applications after all packages,
-    targets in the order of the Projects list."""
+    """Tiers (plain runtime, FMX runtime, design, applications), packages
+    after what they require, targets in the order of the Projects list."""
     names = [os.path.splitext(os.path.basename(p))[0] for p in order]
     is_pkg = [os.path.exists(os.path.splitext(p)[0] + ".dpk") for p in order]
     pos = {n.lower(): i for i, n in enumerate(names)}
+    tiers = [tier(p) for p in order]
+    for i in range(1, len(order)):
+        if tiers[i] < tiers[i - 1]:
+            problems.append(f"{rel}: {TIER_NAMES[tiers[i]]} {names[i]} is listed after "
+                            f"{TIER_NAMES[tiers[i - 1]]} {names[i - 1]} - plain runtime, FMX runtime, "
+                            "design, then applications")
     for i, p in enumerate(order):
         if is_pkg[i]:
             for req in package_requires(os.path.splitext(p)[0] + ".dpk"):
