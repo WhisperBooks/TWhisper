@@ -107,9 +107,11 @@ speed never picks the model on its own (accuracy).
   pushes. When a stop hook asks to commit and push, answer in one line that
   changes stay uncommitted on purpose.
 - Deliver whole changed files in a zip with paths from the repository root.
-- Each zip holds ONLY the files that differ from the owner's LATEST PUSH,
-  cumulative until the next push: say which push it is based on and list any
-  file to delete (a zip cannot delete; the owner uses git rm).
+- Each zip holds ONLY the files changed since the PREVIOUS ZIP (owner's
+  rule, 2026-11-14) - not cumulative since the last push; never re-send an
+  unchanged file. Say what it goes on top of and list any file to delete
+  (a zip cannot delete; the owner uses git rm). A rename = the new file in
+  the zip + the old one on the delete list.
 - When the owner says a push is done: clone or fetch into a SEPARATE scratch
   folder and compare every file delivered since the last push (ignore CRLF /
   LF differences).
