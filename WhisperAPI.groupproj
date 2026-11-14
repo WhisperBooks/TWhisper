@@ -6,16 +6,16 @@
         <Projects Include="FFmpegAPI\packages\FFmpegAPI.dproj">
             <Dependencies/>
         </Projects>
-        <Projects Include="FFmpegAPI\packages\FFmpegAPIFMX.dproj">
-            <Dependencies/>
-        </Projects>
-        <Projects Include="FFmpegAPI\packages\dclFFmpegAPIFMX.dproj">
-            <Dependencies/>
-        </Projects>
         <Projects Include="packages\WhisperAPI.dproj">
             <Dependencies/>
         </Projects>
         <Projects Include="packages\WhisperAPIFMX.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="FFmpegAPI\packages\FFmpegAPIFMX.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="FFmpegAPI\packages\dclFFmpegAPIFMX.dproj">
             <Dependencies/>
         </Projects>
         <Projects Include="packages\dclWhisperAPIFMX.dproj">
@@ -44,24 +44,6 @@
     <Target Name="FFmpegAPI:Make">
         <MSBuild Projects="FFmpegAPI\packages\FFmpegAPI.dproj" Targets="Make"/>
     </Target>
-    <Target Name="FFmpegAPIFMX">
-        <MSBuild Projects="FFmpegAPI\packages\FFmpegAPIFMX.dproj"/>
-    </Target>
-    <Target Name="FFmpegAPIFMX:Clean">
-        <MSBuild Projects="FFmpegAPI\packages\FFmpegAPIFMX.dproj" Targets="Clean"/>
-    </Target>
-    <Target Name="FFmpegAPIFMX:Make">
-        <MSBuild Projects="FFmpegAPI\packages\FFmpegAPIFMX.dproj" Targets="Make"/>
-    </Target>
-    <Target Name="dclFFmpegAPIFMX">
-        <MSBuild Projects="FFmpegAPI\packages\dclFFmpegAPIFMX.dproj"/>
-    </Target>
-    <Target Name="dclFFmpegAPIFMX:Clean">
-        <MSBuild Projects="FFmpegAPI\packages\dclFFmpegAPIFMX.dproj" Targets="Clean"/>
-    </Target>
-    <Target Name="dclFFmpegAPIFMX:Make">
-        <MSBuild Projects="FFmpegAPI\packages\dclFFmpegAPIFMX.dproj" Targets="Make"/>
-    </Target>
     <Target Name="WhisperAPI">
         <MSBuild Projects="packages\WhisperAPI.dproj"/>
     </Target>
@@ -79,6 +61,24 @@
     </Target>
     <Target Name="WhisperAPIFMX:Make">
         <MSBuild Projects="packages\WhisperAPIFMX.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="FFmpegAPIFMX">
+        <MSBuild Projects="FFmpegAPI\packages\FFmpegAPIFMX.dproj"/>
+    </Target>
+    <Target Name="FFmpegAPIFMX:Clean">
+        <MSBuild Projects="FFmpegAPI\packages\FFmpegAPIFMX.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="FFmpegAPIFMX:Make">
+        <MSBuild Projects="FFmpegAPI\packages\FFmpegAPIFMX.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="dclFFmpegAPIFMX">
+        <MSBuild Projects="FFmpegAPI\packages\dclFFmpegAPIFMX.dproj"/>
+    </Target>
+    <Target Name="dclFFmpegAPIFMX:Clean">
+        <MSBuild Projects="FFmpegAPI\packages\dclFFmpegAPIFMX.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="dclFFmpegAPIFMX:Make">
+        <MSBuild Projects="FFmpegAPI\packages\dclFFmpegAPIFMX.dproj" Targets="Make"/>
     </Target>
     <Target Name="dclWhisperAPIFMX">
         <MSBuild Projects="packages\dclWhisperAPIFMX.dproj"/>
@@ -108,13 +108,13 @@
         <MSBuild Projects="demos\WhisperConsole\WhisperConsole.dproj" Targets="Make"/>
     </Target>
     <Target Name="Build">
-        <CallTarget Targets="FFmpegAPI;FFmpegAPIFMX;dclFFmpegAPIFMX;WhisperAPI;WhisperAPIFMX;dclWhisperAPIFMX;WhisperDemo;WhisperConsole"/>
+        <CallTarget Targets="FFmpegAPI;WhisperAPI;WhisperAPIFMX;FFmpegAPIFMX;dclFFmpegAPIFMX;dclWhisperAPIFMX;WhisperDemo;WhisperConsole"/>
     </Target>
     <Target Name="Clean">
-        <CallTarget Targets="FFmpegAPI:Clean;FFmpegAPIFMX:Clean;dclFFmpegAPIFMX:Clean;WhisperAPI:Clean;WhisperAPIFMX:Clean;dclWhisperAPIFMX:Clean;WhisperDemo:Clean;WhisperConsole:Clean"/>
+        <CallTarget Targets="FFmpegAPI:Clean;WhisperAPI:Clean;WhisperAPIFMX:Clean;FFmpegAPIFMX:Clean;dclFFmpegAPIFMX:Clean;dclWhisperAPIFMX:Clean;WhisperDemo:Clean;WhisperConsole:Clean"/>
     </Target>
     <Target Name="Make">
-        <CallTarget Targets="FFmpegAPI:Make;FFmpegAPIFMX:Make;dclFFmpegAPIFMX:Make;WhisperAPI:Make;WhisperAPIFMX:Make;dclWhisperAPIFMX:Make;WhisperDemo:Make;WhisperConsole:Make"/>
+        <CallTarget Targets="FFmpegAPI:Make;WhisperAPI:Make;WhisperAPIFMX:Make;FFmpegAPIFMX:Make;dclFFmpegAPIFMX:Make;dclWhisperAPIFMX:Make;WhisperDemo:Make;WhisperConsole:Make"/>
     </Target>
     <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
 </Project>
