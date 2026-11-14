@@ -4,8 +4,8 @@
   SubRip / WebVTT, and the words as an Audacity label track or JSON.)
 
   The TWhisperAPI component (WhisperAPI1) and its events are set up in
-  uMain.fmx, and so is TFFmpegAPI (FFmpegAPI1, from the FFmpegAPI
-  submodule): a WAV file goes straight to WhisperAPI1, any other audio
+  uMain.fmx, and so is TFFmpegAPI (FFmpegAPI1, from TFFMpegAPI, installed
+  separately): a WAV file goes straight to WhisperAPI1, any other audio
   (MP3, M4A / M4B, FLAC, Ogg, ...) is decoded by FFmpegAPI1 to 16 kHz mono
   on its worker thread first; only the settings file and the language list are handled in
   FormCreate. Settings (model, audio file, language, options) are kept per

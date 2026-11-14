@@ -10,8 +10,8 @@
   @link(TWhisperAudioSet) makes the parts: one per file, or one per
   chapter of a file that has chapters (an M4B), and reads them one at a
   time - so memory holds one part, however long the book. WAV files are
-  read by Whisper.Audio; everything else through the FFmpegAPI submodule
-  (FFmpeg.API, FFmpeg.Media), decoded to 16 kHz mono. Each
+  read by Whisper.Audio; everything else through TFFMpegAPI (package
+  FFmpegAPI: FFmpeg.API, FFmpeg.Media), decoded to 16 kHz mono. Each
   part's place on the joined time line (@link(TWhisperAudioPart.Offset))
   is the sum of the lengths actually decoded before it, so the times of a
   transcription of all parts in order map back exactly to a file and a

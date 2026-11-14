@@ -6,8 +6,8 @@
   files in every common encoding (PCM 8 / 16 / 24 / 32-bit, IEEE float
   32 / 64-bit, WAVE_FORMAT_EXTENSIBLE), any channel count and any sample
   rate, mixes down to mono and resamples with a windowed-sinc filter.
-  Compressed formats (MP3, AAC, Opus, ...) are read through the FFmpegAPI
-  submodule (FFmpeg's shared libraries; see Whisper.AudioSet), or convert
+  Compressed formats (MP3, AAC, Opus, ...) are read through TFFMpegAPI
+  (FFmpeg's shared libraries; see Whisper.AudioSet), or convert
   them first, e.g.
   @code(ffmpeg -i in.mp3 -ar 16000 -ac 1 -c:a pcm_s16le out.wav).
 

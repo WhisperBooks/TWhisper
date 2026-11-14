@@ -37,22 +37,21 @@ def lib_units(rel):   # rel = path from project dir to repo root
     return [(u, f"{rel}lib\\{u}.pas") for u in LIB]
 
 
-# Packages of submodules, built first (in this order) by WhisperAPI.groupproj:
-# (name, folder of the .dproj). FFmpegAPI is the FFmpeg binding
-# (github.com/G3DGames/TFFMpegAPI); WhisperAPI requires it. Its FMX and
-# design packages are in the group too (owner, 2026-11-14: TFFmpegAPI has
-# its own palette page "FFmpegAPI" and packages). Its own
-# tools/gen_projects.py makes its projects.
-SUBMODULE_PACKAGES = [("FFmpegAPI", "FFmpegAPI\\packages"),
-                      ("FFmpegAPIFMX", "FFmpegAPI\\packages"),
-                      ("dclFFmpegAPIFMX", "FFmpegAPI\\packages")]
+# INSTALLED PREREQUISITE (owner, 2026-11-14 23:14: "TWhisper should no
+# longer have a FFMpeg submodule - it should rely on TFFMpegAPI component and
+# the packages removed from the group"): the FFmpeg binding is TFFMpegAPI
+# (github.com/G3DGames/TFFMpegAPI), built and installed from its own
+# repository like any third-party component. Its runtime package FFmpegAPI
+# (FFmpegAPI.dcp in Delphi's Dcp folder) is REQUIRED by WhisperAPI; none of
+# its projects are in WhisperAPI.groupproj.
+EXTERNAL_PACKAGES = ["FFmpegAPI"]
 
-# OWNER'S GROUP ORDER (2026-11-14 22:56, commit 1cac2e7 "Package Order", as
-# saved by the IDE): plain runtime packages, then FMX runtime packages, then
-# design packages, then applications. Build / Clean / Make use the same
-# order. tools/project_check.py checks the tiers and the requires order.
-GROUP_ORDER = ["FFmpegAPI", "WhisperAPI", "WhisperAPIFMX", "FFmpegAPIFMX", "dclFFmpegAPIFMX",
-               "dclWhisperAPIFMX", "WhisperDemo", "WhisperConsole"]
+# OWNER'S GROUP ORDER (2026-11-14; tiers as in commit 1cac2e7 "Package
+# Order", the FFmpegAPI packages since removed): plain runtime packages, then
+# FMX runtime packages, then design packages, then applications. Build /
+# Clean / Make use the same order. tools/project_check.py checks the tiers
+# and the requires order.
+GROUP_ORDER = ["WhisperAPI", "WhisperAPIFMX", "dclWhisperAPIFMX", "WhisperDemo", "WhisperConsole"]
 
 PROJECTS = [
     # The demos use the library like any user project: its DCUs come from the
@@ -309,7 +308,6 @@ def groupproj():
     # builds. No <Dependencies> (the owner's saved file has none): the order
     # is the dependency.
     every = {p["name"]: p for p in PROJECTS}
-    every.update({n: dict(name=n, dir=d) for n, d in SUBMODULE_PACKAGES})
     missing = set(every) ^ set(GROUP_ORDER)
     if missing:
         raise SystemExit(f"GROUP_ORDER and the projects differ: {sorted(missing)}")

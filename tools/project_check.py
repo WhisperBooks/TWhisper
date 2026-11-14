@@ -9,14 +9,16 @@ For every .dproj / .groupproj under the repository:
   * the .pas units of the .dproj match the "in '...'" units of the
     .dpr / .dpk (same set, compared case-insensitively);
   * every project in a .groupproj exists;
-  * BUILD ORDER of every .groupproj (owner's rule, 2026-11-14; TWhisper's
-    order as saved in commit 1cac2e7): in tiers - plain runtime packages
-    (FFmpegAPI, WhisperAPI), then FMX runtime packages (WhisperAPIFMX,
-    FFmpegAPIFMX), then design packages (dclFFmpegAPIFMX,
-    dclWhisperAPIFMX), then applications; every package after the
-    packages it requires; and the Build / Clean / Make targets in the same
-    order as the Projects list - another order breaks Build All and
-    Delphi's quick re-compilation;
+  * BUILD ORDER of every .groupproj (owner's rule, 2026-11-14): in tiers -
+    plain runtime packages (WhisperAPI), then FMX runtime packages
+    (WhisperAPIFMX), then design packages (dclWhisperAPIFMX), then
+    applications; every package after the packages it requires; and the
+    Build / Clean / Make targets in the same order as the Projects list -
+    another order breaks Build All and Delphi's quick re-compilation;
+  * a package required by a .dpk is in the group or one of
+    EXTERNAL_REQUIRES (Delphi's own, and FFmpegAPI - TFFMpegAPI, installed
+    from its own repository; owner 2026-11-14: no submodule, not in the
+    group);
   * no demo source includes Whisper.inc (demos have no path to lib/);
   * no source spells a constant in two ways (Pascal ignores case).
 
@@ -49,6 +51,9 @@ def package_requires(dpk):
     return [n.strip().lower() for n in m.group(1).split(",")] if m else []
 
 
+# Packages a .dpk may require without them being in the group.
+EXTERNAL_REQUIRES = {"rtl", "fmx", "vcl", "designide", "ffmpegapi"}
+
 TIER_NAMES = ["plain runtime package", "FMX runtime package", "design package", "application"]
 
 
@@ -70,6 +75,12 @@ def check_group_order(rel, order, tree):
     is_pkg = [os.path.exists(os.path.splitext(p)[0] + ".dpk") for p in order]
     pos = {n.lower(): i for i, n in enumerate(names)}
     tiers = [tier(p) for p in order]
+    for i, p in enumerate(order):
+        if is_pkg[i]:
+            for req in package_requires(os.path.splitext(p)[0] + ".dpk"):
+                if req not in pos and req not in EXTERNAL_REQUIRES:
+                    problems.append(f"{rel}: {names[i]} requires {req}, which is neither in the "
+                                    "group nor a known installed package (EXTERNAL_REQUIRES)")
     for i in range(1, len(order)):
         if tiers[i] < tiers[i - 1]:
             problems.append(f"{rel}: {TIER_NAMES[tiers[i]]} {names[i]} is listed after "

@@ -108,19 +108,16 @@ and WAV files over 4 GB included.
 ## Other audio formats and audiobook chapters (FFmpeg)
 
 Everything FFmpeg reads - M4B / M4A, MP3, FLAC, Ogg, Opus, the sound of
-a video - comes in through the **FFmpegAPI submodule** (folder
-`FFmpegAPI`, github.com/G3DGames/TFFMpegAPI): FFmpeg's **shared**
+a video - comes in through **TFFMpegAPI** (github.com/G3DGames/TFFMpegAPI,
+package `FFmpegAPI`, units `FFmpeg.API` and `FFmpeg.Media`): FFmpeg's **shared**
 libraries, loaded at run time by name like whisper.cpp's. Nothing is
 linked in; a program that never opens such a file never needs them.
 TWhisper has no FFmpeg code of its own: the libraries, their versions and
 struct layout, chapters, decoding, cover art, copy protection and FFmpeg's
 licence are all FFmpegAPI's - see its README.
 
-- **Getting it:** clone TWhisper with `git clone --recursive`, or run
-  `git submodule update --init` in an existing clone. The runtime package
-  `FFmpegAPI` (which `WhisperAPI` requires) and the component packages
-  `FFmpegAPIFMX` / `dclFFmpegAPIFMX` (`TFFmpegAPI`, palette page
-  "FFmpegAPI") are first in `WhisperAPI.groupproj`.
+- **Getting it:** TFFMpegAPI is installed separately, before TWhisper is
+  built - see "Packages and demos".
 - **Which libraries:** FFmpeg 8 as a "shared" build - `avutil-60.dll`,
   `swresample-6.dll`, `avcodec-62.dll`, `avformat-62.dll` on Windows (the
   usual single `ffmpeg.exe` downloads have no DLLs). The licence is in the
@@ -378,31 +375,36 @@ lib/       framework-free units (Delphi + FPC 3.2.2)
   Whisper.Words         word timings: model header -> DTW heads, tokens -> words, JSON / Audacity labels
   Whisper.Align         book text <-> transcript words: every book word gets its spoken time
   Whisper.Core          TWhisperModel, TWhisperParams, TWhisperRun, TWhisperBenchmark, text export
-  Whisper.AudioSet      a recording in many files (folder, playlist, chapters) on one time line; FFmpeg via FFmpegAPI
+  Whisper.AudioSet      a recording in many files (folder, playlist, chapters) on one time line; FFmpeg via TFFMpegAPI
   Whisper.Components    TCustomWhisper (lifecycle, worker thread, main-thread events)
 fmx/       Whisper.FMX (TWhisperAPI), Whisper.FMX.Reg (design time)
-FFmpegAPI/ SUBMODULE (github.com/G3DGames/TFFMpegAPI): the FFmpeg binding, package FFmpegAPI
-packages/  WhisperAPI (runtime, rtl, FFmpegAPI), WhisperAPIFMX (runtime), dclWhisperAPIFMX (design): .dpk + .dproj
-WhisperAPI.groupproj   every project: FFmpegAPI, runtime packages, design package, apps
+packages/  WhisperAPI (runtime, requires rtl and TFFMpegAPI's FFmpegAPI), WhisperAPIFMX (runtime), dclWhisperAPIFMX (design): .dpk + .dproj
+WhisperAPI.groupproj   every project: runtime packages, design package, apps
 demos/     WhisperDemo (FMX), WhisperConsole (console, smoke test): .dpr + .dproj + README.md
 tools/     verify_layout.py, pasdoc_check.py, gen_projects.py, project_check.py
 ```
 
 ## Packages and demos
 
-Open **`WhisperAPI.groupproj`** at the repository root. It lists the projects
-in build order:
-1. the FFmpegAPI submodule's packages (`FFmpegAPI\packages`): runtime
-   `FFmpegAPI`, which `WhisperAPI` requires, FMX runtime `FFmpegAPIFMX`
-   and design `dclFFmpegAPIFMX` (`TFFmpegAPI` on its own palette page,
-   "FFmpegAPI");
-2. the runtime package `WhisperAPI`;
-3. the FMX runtime package `WhisperAPIFMX`;
-4. the design package `dclWhisperAPIFMX`;
-5. the demos.
+**Dependency: TFFMpegAPI.** TWhisper depends on it; install it first,
+like any third-party component: clone github.com/G3DGames/TFFMpegAPI anywhere, open its
+`FFmpegAPI.groupproj`, Build All for every platform you target (and Win32
+for the 32-bit IDE), and install `dclFFmpegAPIFMX` (`TFFmpegAPI`, palette
+page "FFmpegAPI"). Its runtime package's `FFmpegAPI.dcp` and DCUs then sit
+in Delphi's Dcp folder, where `WhisperAPI` (which requires it) and the
+demos find them; nothing of it is in this repository or in
+`WhisperAPI.groupproj`. Rebuild it there after updating TFFMpegAPI, then
+rebuild TWhisper's packages.
 
-An empty `FFmpegAPI` folder means the submodule was not fetched: run
-`git submodule update --init`.
+Then open **`WhisperAPI.groupproj`** at the repository root. It lists the
+projects in build order:
+1. the runtime package `WhisperAPI`;
+2. the FMX runtime package `WhisperAPIFMX`;
+3. the design package `dclWhisperAPIFMX`;
+4. the demos.
+
+"Cannot find FFmpegAPI.dcp" (or a missing `FFmpeg.*` unit) means
+TFFMpegAPI is not built for that platform yet.
 
 Build All compiles each package before everything that needs it, so
 Delphi's quick re-compilation works. Keep that order: another one breaks
@@ -416,13 +418,13 @@ builds. `tools/project_check.py` reports any other order.
 | `packages/WhisperAPIFMX` | runtime: `Whisper.FMX` | + Win32 (for the 32-bit IDE), Android64 |
 | `packages/dclWhisperAPIFMX` | design: registers `TWhisperAPI` | Win32 / Win64 (the IDE's) |
 
-1. **Runtime packages:** build `FFmpegAPI`, `WhisperAPI` and `WhisperAPIFMX` for every platform
+1. **Runtime packages:** build `WhisperAPI` and `WhisperAPIFMX` (after TFFMpegAPI's `FFmpegAPI`) for every platform
    you target. Their DCUs go to `$(BDSCOMMONDIR)\Dcp\$(Platform)`, next to
    their `.dcp`, which is on the IDE's default Library path. Projects using
    the library therefore need no search paths. Debug and Release share that
    folder (the last build wins).
-2. **Design packages:** install `dclWhisperAPIFMX` (and `dclFFmpegAPIFMX` for
-   the FFmpeg component) for the IDE you run.
+2. **Design package:** install `dclWhisperAPIFMX` for the IDE you run
+   (TFFMpegAPI's `dclFFmpegAPIFMX` is installed from its own repository).
    - With the 32-bit IDE that means building the runtime packages for Win32
      too. The IDE loads them, but never loads whisper.dll, so no 32-bit DLL
      is needed.

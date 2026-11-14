@@ -2,17 +2,20 @@
 
 FireMonkey demo of TWhisperAPI: choose a model and a compute device, benchmark
 the devices, transcribe an audio file (a WAV directly; MP3, M4A / M4B, FLAC,
-Ogg, ... through the TFFmpegAPI component of the FFmpegAPI submodule, which
+Ogg, ... through the TFFmpegAPI component of TFFMpegAPI, which
 decodes it to 16 kHz mono on a worker thread), save SubRip / WebVTT / text, and with
 "Word timings" save the words as an Audacity label track or JSON.
 
 ## Before the first build
 
-The demo uses the library like any user project: build the runtime packages
-**FFmpegAPI**, **WhisperAPI**, **WhisperAPIFMX** and **FFmpegAPIFMX** for the
-same platform first (open `WhisperAPI.groupproj` at the repository root and
-build all - it builds the packages before the demos). Opening the form in the
-designer needs **dclWhisperAPIFMX** and **dclFFmpegAPIFMX** installed.
+TFFMpegAPI (github.com/G3DGames/TFFMpegAPI) is a dependency of TWhisper: build
+its packages **FFmpegAPI** and **FFmpegAPIFMX** for the same platform and
+install **dclFFmpegAPIFMX**, from its own `FFmpegAPI.groupproj`. Then the demo
+uses the library like any user project: build the runtime packages
+**WhisperAPI** and **WhisperAPIFMX** first (open `WhisperAPI.groupproj` at the
+repository root and build all - it builds the packages before the demos).
+Opening the form in the designer needs **dclWhisperAPIFMX** and
+**dclFFmpegAPIFMX** installed.
 
 ## Next to WhisperDemo.exe
 

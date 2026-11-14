@@ -83,7 +83,7 @@ uses
   Whisper.Align,
   Whisper.Core,
   Whisper.AudioSet,
-  // FFmpeg: DCUs of the runtime package FFmpegAPI (the FFmpegAPI submodule)
+  // FFmpeg: DCUs of TFFMpegAPI's runtime package FFmpegAPI (installed separately)
   FFmpeg.API;
 
 type
@@ -117,7 +117,7 @@ const
   { The delivery this console comes from (zip number): printed first, so a
     log shows which build made it. Bumped with every zip that changes the
     library or the console. }
-  CONSOLE_DELIVERY = 15;
+  CONSOLE_DELIVERY = 17;
   { Learned habits listed by --align. }
   ALIGN_LEARNED_SHOWN = 20;
   { Marks an interpolated book word in the --align-labels file. }

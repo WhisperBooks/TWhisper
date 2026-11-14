@@ -42,34 +42,37 @@ speed never picks the model on its own (accuracy).
   next to the unit or on the search path).
 - GENERATED, never edit by hand: `lib/Whisper.Layout.inc`
   (tools/verify_layout.py).
-- `FFmpegAPI/` - SUBMODULE (github.com/G3DGames/TFFMpegAPI, owner
-  2026-11-14): the FFmpeg binding, with its own CLAUDE.md, checks and
-  FFmpegAPI-NN zips. TWhisper never edits files inside it; a change there
-  is an FFmpegAPI zip, then the owner moves the submodule pointer.
+- TFFMpegAPI (github.com/G3DGames/TFFMpegAPI) is a DEPENDENCY of TWhisper
+  (owner, 23:15), installed separately: NOT a submodule and NOT in the group (owner, 2026-11-14 23:14: "TWhisper
+  should no longer have a FFMpeg submodule - it should rely on TFFMpegAPI
+  component and the packages removed from the group"). It is built and
+  installed from its own repository like any third-party component;
+  package WhisperAPI REQUIRES its runtime package FFmpegAPI (FFmpegAPI.dcp
+  from Delphi's Dcp folder; gen_projects.py EXTERNAL_PACKAGES,
+  project_check.py EXTERNAL_REQUIRES). It has its own CLAUDE.md, checks and
+  FFmpegAPI-NN zips; TWhisper never carries a copy of its files.
   TWhisper has NO FFmpeg code of its own (owner, 2026-11-14: "tidy
   TWhisper of FFMpeg"; zip 15 removed lib/Whisper.FFmpeg): Whisper.AudioSet
   and the console use FFmpeg.API (TFFmpegLibrary) and FFmpeg.Media
   (TFFmpegMediaFile, TFFmpegAudioDecoder at WHISPER_SAMPLE_RATE mono)
-  directly; AudioSet turns EFFmpegError into EWhisperError. Package
-  WhisperAPI requires FFmpegAPI. All three FFmpegAPI packages (FFmpegAPI,
-  FFmpegAPIFMX, dclFFmpegAPIFMX - owner 2026-11-14: TFFmpegAPI "needs it's
-  own palette and package": palette page "FFmpegAPI") are in
-  WhisperAPI.groupproj (gen_projects.py SUBMODULE_PACKAGES).
-- GROUP ORDER (owner, 2026-11-14 22:56, commit 1cac2e7 "Package Order",
-  saved by the IDE - KEEP IT): FFmpegAPI, WhisperAPI, WhisperAPIFMX,
-  FFmpegAPIFMX, dclFFmpegAPIFMX, dclWhisperAPIFMX, WhisperDemo,
-  WhisperConsole - in tiers: plain runtime packages, FMX runtime packages,
-  design packages, applications; Build / Clean / Make the same.
-  gen_projects.py GROUP_ORDER writes exactly this (checked: identical to
-  1cac2e7); project_check.py fails on a lower tier after a higher one, a
-  package before what it requires, or targets in another order.
+  directly; AudioSet turns EFFmpegError into EWhisperError.
+- GROUP ORDER (owner's tiers, 2026-11-14, commit 1cac2e7 "Package Order";
+  the FFmpegAPI packages removed from the group 23:14): WhisperAPI,
+  WhisperAPIFMX, dclWhisperAPIFMX, WhisperDemo, WhisperConsole - plain
+  runtime packages, FMX runtime packages, design packages, applications;
+  Build / Clean / Make the same. gen_projects.py GROUP_ORDER writes
+  exactly this; project_check.py fails on a lower tier after a higher
+  one, a package before what it requires, a required package that is
+  neither in the group nor in EXTERNAL_REQUIRES, or targets in another
+  order.
 - WhisperDemo has FFmpegAPI1 (TFFmpegAPI, 16 kHz mono) on its form (owner,
   22:57: "nice if the FFMprg component were on the FMX Form"): a WAV goes
   to WhisperAPI1 as before; other audio is opened and decoded by
   FFmpegAPI1 on its worker thread, then OnDecoded starts TranscribeAsync
   (or BenchmarkAsync on the first BENCHMARK_SECONDS). The whole file is
   decoded: for long audiobooks the console's --chapters is the way.
-  FPC builds need FFmpegAPI/lib on the unit path.
+  FPC builds need TFFMpegAPI's lib/ on the unit path (here: a clone of
+  it next to the sources).
 - The FIELDS table of tools/verify_layout.py, the record declarations in
   Whisper.Types and the Add(...) list of TWhisperLib.CheckLayout must list
   the same fields in the same order. Adding a field = all three + rerun
@@ -151,7 +154,7 @@ speed never picks the model on its own (accuracy).
   even after a push. A corrected zip gets the NEXT number, never the old
   name; say which number it replaces. Every delivery says what it goes on
   top of: a zip number, or a commit when nothing is pending. Last number
-  used: 16. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
+  used: 17. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
   number in every zip that changes lib/ or the console (its first log
   line says which build made a log - owner was losing track, 20:26).
 - When the owner says a push is done: clone or fetch into a SEPARATE scratch
@@ -196,14 +199,18 @@ standard test because its EPUB text is known.
   real speech: lib/Whisper.Words (new unit), WordTimestamps on the
   component, IncludeWords on TWhisperRun, console --words / --labels /
   --json / --no-dtw, demo "Word timings" + save as Audacity labels / JSON.
-- Last push: 1cac2e7 ("Package Order", 2026-11-14 ~22:56: the owner's
-  group order, see GROUP ORDER). Before it 48a269b "No FFMpeg" = zip 15
-  (checked: 8 files identical apart from line endings, the 3 files
-  deleted; a fresh clone with the submodule at 3a9dd6e passes the checks
-  and builds with FPC), c07b0cc = zip 14, 0aa0b87 = zips 11-13, f7a5f93
-  added the submodule - all checked. NOT YET PUSHED:
-  TWhisper-16-demoffmpeg.zip on 1cac2e7 (GROUP_ORDER in gen_projects.py,
-  tier check in project_check.py, FFmpegAPI1 on WhisperDemo's form).
+- Last push: 3001eb6 ("FFMpeg Sync", 2026-11-14 ~23:12; checked: the 6
+  files of zip 16 identical apart from line endings, the submodule moved
+  to TFFMpegAPI 54f7ab2; a fresh clone with it passes the checks and the
+  console builds and runs with FPC). Owner's Delphi run of FFmpegConsole
+  --check showed the Windows library-folder fix of FFmpegAPI-02 working.
+  Before it: 1cac2e7 = the owner's group order, 48a269b = zip 15,
+  c07b0cc = zip 14, 0aa0b87 = zips 11-13 - all checked. NOT YET PUSHED:
+  TWhisper-17-nosubmodule.zip on 3001eb6 (FFmpegAPI submodule dropped;
+  TFFMpegAPI an installed prerequisite; the group back to TWhisper's five
+  projects). With it the owner runs: git rm FFmpegAPI (removes the
+  submodule and its .gitmodules entry; delete .gitmodules if it is then
+  empty) and removes .git/modules/FFmpegAPI.
 - redistributable_bin/ and *.dll are git-ignored ON PURPOSE (local copy of
   whisper-dev's dlls/; CUDA DLLs exceed GitHub's 100 MB limit). Ship
   binaries as a GitHub Release when needed.
