@@ -107,52 +107,44 @@ and WAV files over 4 GB included.
 
 ## Other audio formats and audiobook chapters (FFmpeg)
 
-`Whisper.FFmpeg` reads everything FFmpeg reads - M4B / M4A, MP3, FLAC, Ogg,
-Opus, WAV, the sound of a video - through FFmpeg's **shared** libraries,
-loaded at run time by name like whisper.cpp's. Nothing is linked in; a
-program that never opens such a file never needs them.
+Everything FFmpeg reads - M4B / M4A, MP3, FLAC, Ogg, Opus, the sound of
+a video - comes in through the **FFmpegAPI submodule** (folder
+`FFmpegAPI`, github.com/G3DGames/TFFMpegAPI): FFmpeg's **shared**
+libraries, loaded at run time by name like whisper.cpp's. Nothing is
+linked in; a program that never opens such a file never needs them.
+TWhisper has no FFmpeg code of its own: the libraries, their versions and
+struct layout, chapters, decoding, cover art, copy protection and FFmpeg's
+licence are all FFmpegAPI's - see its README.
 
-The FFmpeg binding itself is the **FFmpegAPI submodule** (folder
-`FFmpegAPI`, github.com/G3DGames/TFFMpegAPI; units `FFmpeg.API`,
-`FFmpeg.Media`; runtime package `FFmpegAPI`, which `WhisperAPI` requires).
-Clone TWhisper with `git clone --recursive`, or run
-`git submodule update --init` in an existing clone. `Whisper.FFmpeg` only
-adds whisper.cpp's terms: 16 kHz mono, `TWhisperSamples`, `EWhisperError`.
-See FFmpegAPI's README for the libraries, the struct layout check and
-FFmpeg's licence (`TWhisperFFmpeg.Create(Folder, flpLGPL)` refuses GPL and
-non-free builds).
-
-- **Which libraries:** FFmpeg 8 - `avutil-60.dll`, `swresample-6.dll`,
-  `avcodec-62.dll`, `avformat-62.dll` on Windows (a "shared" build; the
-  usual single `ffmpeg.exe` downloads have no DLLs), `libavutil.so.60` ...
-  on Linux, `libavutil.60.dylib` ... on macOS. LGPL and GPL builds both
-  work; the licence is in the log line, and a non-free build is warned
-  about.
-- **Why the major version matters:** a few fields of FFmpeg's structs
-  are read at fixed offsets, generated per platform in the submodule
-  (`FFmpegAPI/lib/FFmpeg.Layout.inc`); `TWhisperFFmpeg.Create` refuses
-  other major versions and checks the Pascal records against the C layout.
-- **Chapters:** `TWhisperAudioFile.Chapters` lists them (title, start,
-  end); `Read(Start, End)` decodes any range to 16 kHz mono. An audiobook
-  is best transcribed a chapter at a time: one chapter in memory, however
-  long the book. `WhisperAppendTranscription` (Whisper.Core) joins the
-  chapters' results with their times moved to the start of the file.
+- **Getting it:** clone TWhisper with `git clone --recursive`, or run
+  `git submodule update --init` in an existing clone. The runtime package
+  `FFmpegAPI` (which `WhisperAPI` requires) and the component packages
+  `FFmpegAPIFMX` / `dclFFmpegAPIFMX` (`TFFmpegAPI`, palette page
+  "FFmpegAPI") are first in `WhisperAPI.groupproj`.
+- **Which libraries:** FFmpeg 8 as a "shared" build - `avutil-60.dll`,
+  `swresample-6.dll`, `avcodec-62.dll`, `avformat-62.dll` on Windows (the
+  usual single `ffmpeg.exe` downloads have no DLLs). The licence is in the
+  log line; `TFFmpegLibrary.Create(Folder, flpLGPL)` refuses GPL and
+  non-free builds.
+- **Chapters:** an audiobook is best transcribed a chapter at a time: one
+  chapter in memory, however long the book. `TWhisperAudioSet` (below)
+  does that, or directly:
 
 ```pascal
-FF := TWhisperFFmpeg.Create;                  // or Create('C:\ffmpeg\bin')
-Book := TWhisperAudioFile.Create(FF, 'book.m4b');
+FF := TFFmpegLibrary.Create;                   // FFmpeg.API; or Create('C:\ffmpeg\bin')
+Book := TFFmpegMediaFile.Create(FF, 'book.m4b');  // FFmpeg.Media
+Dec := TFFmpegAudioDecoder.Create(Book, -1, WHISPER_SAMPLE_RATE, 1);  // 16 kHz mono
 for I := 0 to High(Book.Chapters) do
 begin
-  Part := Run.Execute(Book.Read(Book.Chapters[I].StartTime, Book.Chapters[I].EndTime));
+  Samples := TWhisperSamples(Dec.Read(Book.Chapters[I].StartTime, Book.Chapters[I].EndTime));
+  Part := Run.Execute(Samples);
   WhisperAppendTranscription(All, Part, Book.Chapters[I].StartTime);
 end;
 ```
 
-Copy-protected files are not read: `WhisperMp4Protection` looks at an
-MPEG-4 file's header (Audible's `adrm`, FairPlay's `drms`, `sinf` /
-`enca`) and `TWhisperAudioFile` refuses such a file with a clear message
-instead of decoding noise. The extension does not matter: an `.aax` that a
-tool has already decrypted reads like any M4B.
+Copy-protected files (Audible `.aax` straight from Audible, FairPlay) are
+refused by FFmpegAPI with a clear message; a DRM-free copy reads like any
+M4B whatever its extension.
 
 **A recording in many files** - one file per chapter, several files per
 chapter, WAV / FLAC / OGG / MP3 mixed - is a `TWhisperAudioSet`
@@ -383,11 +375,10 @@ lib/       framework-free units (Delphi + FPC 3.2.2)
   Whisper.DynLib        dynamic library loading (from TSteamAPI)
   Whisper.API           TWhisperLib: loading, backends, devices, every export, ABI shims, layout check, log
   Whisper.Audio         WAV reader, 16-bit PCM conversion, windowed-sinc resampler
-  Whisper.FFmpeg        any audio format and its chapters, 16 kHz mono, through the FFmpegAPI submodule
   Whisper.Words         word timings: model header -> DTW heads, tokens -> words, JSON / Audacity labels
   Whisper.Align         book text <-> transcript words: every book word gets its spoken time
   Whisper.Core          TWhisperModel, TWhisperParams, TWhisperRun, TWhisperBenchmark, text export
-  Whisper.AudioSet      a recording in many files (folder, playlist, chapters) on one time line
+  Whisper.AudioSet      a recording in many files (folder, playlist, chapters) on one time line; FFmpeg via FFmpegAPI
   Whisper.Components    TCustomWhisper (lifecycle, worker thread, main-thread events)
 fmx/       Whisper.FMX (TWhisperAPI), Whisper.FMX.Reg (design time)
 FFmpegAPI/ SUBMODULE (github.com/G3DGames/TFFMpegAPI): the FFmpeg binding, package FFmpegAPI

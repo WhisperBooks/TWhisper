@@ -81,9 +81,10 @@ uses
   Whisper.Audio,
   Whisper.Words,
   Whisper.Align,
-  Whisper.FFmpeg,
   Whisper.Core,
-  Whisper.AudioSet;
+  Whisper.AudioSet,
+  // FFmpeg: DCUs of the runtime package FFmpegAPI (the FFmpegAPI submodule)
+  FFmpeg.API;
 
 type
   { Event handlers of the run and the library log. }
@@ -116,7 +117,7 @@ const
   { The delivery this console comes from (zip number): printed first, so a
     log shows which build made it. Bumped with every zip that changes the
     library or the console. }
-  CONSOLE_DELIVERY = 14;
+  CONSOLE_DELIVERY = 15;
   { Learned habits listed by --align. }
   ALIGN_LEARNED_SHOWN = 20;
   { Marks an interpolated book word in the --align-labels file. }
@@ -206,25 +207,25 @@ end;
 
 { Loads FFmpeg from AFolder; with AFolder = '' from the executable's folder
   or the system search path, then from whisper.dll's folder AFallback. }
-function OpenFFmpeg(const AFolder, AFallback: string): TWhisperFFmpeg;
+function OpenFFmpeg(const AFolder, AFallback: string): TFFmpegLibrary;
 var
   First: string;
 begin
   if AFolder <> '' then
-    Exit(TWhisperFFmpeg.Create(AFolder));
+    Exit(TFFmpegLibrary.Create(AFolder));
   try
-    Result := TWhisperFFmpeg.Create('');
+    Result := TFFmpegLibrary.Create('');
   except
-    on E: EWhisperError do
+    on E: EFFmpegError do
     begin
       if AFallback = '' then
         raise;
       First := E.Message;
       try
-        Result := TWhisperFFmpeg.Create(AFallback);
+        Result := TFFmpegLibrary.Create(AFallback);
       except
-        on E2: EWhisperError do
-          raise EWhisperError.Create(First + sLineBreak + E2.Message);
+        on E2: EFFmpegError do
+          raise EFFmpegError.Create(First + sLineBreak + E2.Message);
       end;
     end;
   end;
@@ -397,7 +398,7 @@ var
   I: Integer;
   FFmpegFolder: string;
   ByChapter, FillGaps: Boolean;
-  FF: TWhisperFFmpeg;
+  FF: TFFmpegLibrary;
   AudioIn: TWhisperAudioSet;
   AudioFiles: TStringList;
   NeedFF: Boolean;

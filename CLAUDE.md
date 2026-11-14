@@ -46,9 +46,11 @@ speed never picks the model on its own (accuracy).
   2026-11-14): the FFmpeg binding, with its own CLAUDE.md, checks and
   FFmpegAPI-NN zips. TWhisper never edits files inside it; a change there
   is an FFmpegAPI zip, then the owner moves the submodule pointer.
-  lib/Whisper.FFmpeg is only the 16 kHz mono / EWhisperError adapter
-  (TWhisperFFmpeg = TFFmpegLibrary that raises EWhisperError,
-  TWhisperAudioFile over TFFmpegMediaFile + TFFmpegAudioDecoder). Package
+  TWhisper has NO FFmpeg code of its own (owner, 2026-11-14: "tidy
+  TWhisper of FFMpeg"; zip 15 removed lib/Whisper.FFmpeg): Whisper.AudioSet
+  and the console use FFmpeg.API (TFFmpegLibrary) and FFmpeg.Media
+  (TFFmpegMediaFile, TFFmpegAudioDecoder at WHISPER_SAMPLE_RATE mono)
+  directly; AudioSet turns EFFmpegError into EWhisperError. Package
   WhisperAPI requires FFmpegAPI. All three FFmpegAPI packages (FFmpegAPI,
   FFmpegAPIFMX, dclFFmpegAPIFMX - owner 2026-11-14: TFFmpegAPI "needs it's
   own palette and package": palette page "FFmpegAPI") come first in
@@ -135,7 +137,7 @@ speed never picks the model on its own (accuracy).
   even after a push. A corrected zip gets the NEXT number, never the old
   name; say which number it replaces. Every delivery says what it goes on
   top of: a zip number, or a commit when nothing is pending. Last number
-  used: 14. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
+  used: 15. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
   number in every zip that changes lib/ or the console (its first log
   line says which build made a log - owner was losing track, 20:26).
 - When the owner says a push is done: clone or fetch into a SEPARATE scratch
@@ -180,12 +182,14 @@ standard test because its EPUB text is known.
   real speech: lib/Whisper.Words (new unit), WordTimestamps on the
   component, IncludeWords on TWhisperRun, console --words / --labels /
   --json / --no-dtw, demo "Word timings" + save as Audacity labels / JSON.
-- Last push: 0aa0b87 ("v13", 2026-11-14 ~22:38; checked: zips 11-13
-  identical apart from line endings; f7a5f93 before it added the FFmpegAPI
-  submodule at 3a9dd6e, also checked). NOT YET PUSHED:
-  TWhisper-14-ffmpegapi.zip on 0aa0b87 (Whisper.FFmpeg becomes an
-  adapter over the submodule; Whisper.FFmpegLayout.inc and
-  tools/ffmpeg_layout.py deleted - delete them in the repo too).
+- Last push: c07b0cc ("Integrte", 2026-11-14 ~22:43; checked: the 9 files
+  of zip 14 identical apart from line endings; before it 0aa0b87 "v13" =
+  zips 11-13, and f7a5f93 added the FFmpegAPI submodule at 3a9dd6e, all
+  checked). NOT YET PUSHED: TWhisper-15-noffmpeg.zip on c07b0cc
+  (lib/Whisper.FFmpeg removed; AudioSet and console use the submodule
+  directly). Files to DELETE in the repo with it: lib/Whisper.FFmpeg.pas,
+  lib/Whisper.FFmpegLayout.inc, tools/ffmpeg_layout.py (the last two were
+  left behind by zip 14).
 - redistributable_bin/ and *.dll are git-ignored ON PURPOSE (local copy of
   whisper-dev's dlls/; CUDA DLLs exceed GitHub's 100 MB limit). Ship
   binaries as a GitHub Release when needed.

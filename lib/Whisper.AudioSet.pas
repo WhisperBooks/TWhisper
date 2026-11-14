@@ -10,7 +10,8 @@
   @link(TWhisperAudioSet) makes the parts: one per file, or one per
   chapter of a file that has chapters (an M4B), and reads them one at a
   time - so memory holds one part, however long the book. WAV files are
-  read by Whisper.Audio; everything else through Whisper.FFmpeg. Each
+  read by Whisper.Audio; everything else through the FFmpegAPI submodule
+  (FFmpeg.API, FFmpeg.Media), decoded to 16 kHz mono. Each
   part's place on the joined time line (@link(TWhisperAudioPart.Offset))
   is the sum of the lengths actually decoded before it, so the times of a
   transcription of all parts in order map back exactly to a file and a
@@ -25,7 +26,8 @@ interface
 
 uses
   SysUtils, Classes,
-  Whisper.Types, Whisper.Audio, Whisper.FFmpeg, Whisper.Core;
+  Whisper.Types, Whisper.Audio, Whisper.Core,
+  FFmpeg.API, FFmpeg.Media;
 
 type
   { One part of a recording. Times in seconds. }
@@ -54,23 +56,30 @@ type
   TWhisperAudioSet = class
   private
     { FFmpeg (not owned; nil when every file is a WAV). }
-    FFFmpeg: TWhisperFFmpeg;
+    FFFmpeg: TFFmpegLibrary;
     { Backing field of @link(Parts). }
     FParts: TWhisperAudioPartArray;
     { Open FFmpeg file of the part last read (kept while the next part is
       in the same file). }
-    FOpen: TWhisperAudioFile;
+    FOpen: TFFmpegMediaFile;
+    { 16 kHz mono decoder of FOpen. }
+    FDecoder: TFFmpegAudioDecoder;
     { Backing field of @link(Files). }
     FFiles: TStringList;
     { Recomputes the offsets of the parts from APart on. }
     procedure Reflow(APart: Integer);
+    { Opens AFileName with FFmpeg (EFFmpegError becomes EWhisperError). }
+    function OpenMedia(const AFileName: string): TFFmpegMediaFile;
+    { Closes the open file and its decoder. }
+    procedure CloseMedia;
   public
     { The parts of AFiles, in that order. A file with chapters gives one
       part per chapter when ASplitChapters, else one part.
-      @param(AFFmpeg  Needed for any file that is not a .wav (not owned).)
+      @param(AFFmpeg  FFmpeg's libraries (FFmpeg.API), needed for any file
+        that is not a .wav (not owned; must outlive the set).)
       @raises(EWhisperError when a file other than a WAV comes with no
         FFmpeg, or cannot be opened.) }
-    constructor Create(AFFmpeg: TWhisperFFmpeg; AFiles: TStrings; ASplitChapters: Boolean);
+    constructor Create(AFFmpeg: TFFmpegLibrary; AFiles: TStrings; ASplitChapters: Boolean);
     { Closes the open file. }
     destructor Destroy; override;
     { Decodes part AIndex to mono float at WHISPER_SAMPLE_RATE and fixes its
@@ -476,10 +485,26 @@ end;
 
 { TWhisperAudioSet }
 
-constructor TWhisperAudioSet.Create(AFFmpeg: TWhisperFFmpeg; AFiles: TStrings; ASplitChapters: Boolean);
+function TWhisperAudioSet.OpenMedia(const AFileName: string): TFFmpegMediaFile;
+begin
+  try
+    Result := TFFmpegMediaFile.Create(FFFmpeg, AFileName);
+  except
+    on E: EFFmpegError do
+      raise EWhisperError.Create(E.Message);
+  end;
+end;
+
+procedure TWhisperAudioSet.CloseMedia;
+begin
+  FreeAndNil(FDecoder);
+  FreeAndNil(FOpen);
+end;
+
+constructor TWhisperAudioSet.Create(AFFmpeg: TFFmpegLibrary; AFiles: TStrings; ASplitChapters: Boolean);
 var
   I, K, N: Integer;
-  F: TWhisperAudioFile;
+  F: TFFmpegMediaFile;
   IsWav: Boolean;
 begin
   inherited Create;
@@ -492,7 +517,7 @@ begin
     IsWav := SameText(ExtractFileExt(FFiles[I]), '.wav');
     F := nil;
     if (FFFmpeg <> nil) then
-      F := TWhisperAudioFile.Create(FFFmpeg, FFiles[I])
+      F := OpenMedia(FFiles[I])
     else if not IsWav then
       raise EWhisperError.CreateFmt('%s: FFmpeg is needed for this format', [FFiles[I]]);
     try
@@ -527,7 +552,7 @@ end;
 
 destructor TWhisperAudioSet.Destroy;
 begin
-  FOpen.Free;
+  CloseMedia;
   FFiles.Free;
   inherited;
 end;
@@ -552,17 +577,32 @@ begin
   P := FParts[AIndex];
   if (FFFmpeg = nil) or (SameText(ExtractFileExt(P.FileName), '.wav') and (P.Start = 0) and (P.EndTime = 0)) then
   begin
-    FreeAndNil(FOpen);
+    CloseMedia;
     Result := WhisperLoadWav(P.FileName);
   end
   else
   begin
     if (FOpen = nil) or (FOpen.FileName <> P.FileName) then
     begin
-      FreeAndNil(FOpen);
-      FOpen := TWhisperAudioFile.Create(FFFmpeg, P.FileName);
+      CloseMedia;
+      FOpen := OpenMedia(P.FileName);
+      try
+        FDecoder := TFFmpegAudioDecoder.Create(FOpen, -1, WHISPER_SAMPLE_RATE, 1);
+      except
+        on E: EFFmpegError do
+        begin
+          CloseMedia;
+          raise EWhisperError.Create(E.Message);
+        end;
+      end;
     end;
-    Result := FOpen.Read(P.Start, P.EndTime);
+    try
+      // TFFmpegSamples and TWhisperSamples are both array of Single
+      Result := TWhisperSamples(FDecoder.Read(P.Start, P.EndTime));
+    except
+      on E: EFFmpegError do
+        raise EWhisperError.Create(E.Message);
+    end;
   end;
   FParts[AIndex].Duration := WhisperSamplesSeconds(Result);
   FParts[AIndex].Read := True;
