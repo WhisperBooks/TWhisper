@@ -1,7 +1,7 @@
 { @abstract(Main form of WhisperDemo: model, WAV and compute-device
   selection, a device benchmark, transcription on a worker thread with live
-  segments, progress and the library log, and export as text / SubRip /
-  WebVTT.)
+  segments, progress and the library log, word timings, and export as text /
+  SubRip / WebVTT, and the words as an Audacity label track or JSON.)
 
   The TWhisperAPI component (WhisperAPI1) and its events are set up in
   uMain.fmx; only the settings file and the language list are handled in
@@ -17,7 +17,7 @@ uses
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Dialogs, FMX.StdCtrls,
   FMX.Edit, FMX.ListBox, FMX.Memo, FMX.Memo.Types, FMX.Layouts,
   FMX.Controls.Presentation, FMX.ScrollBox,
-  Whisper.Types, Whisper.API, Whisper.Core, Whisper.Components, Whisper.FMX;
+  Whisper.Types, Whisper.API, Whisper.Words, Whisper.Core, Whisper.Components, Whisper.FMX;
 
 type
   { The demo's main form. }
@@ -44,6 +44,8 @@ type
     cbLanguage: TComboBox;
     { Translate to English. }
     chkTranslate: TCheckBox;
+    { Word timings (DTW; applies when the model is loaded). }
+    chkWords: TCheckBox;
     { Caption of cbDevice. }
     lblDevice: TLabel;
     { Compute device (applies when the model is loaded). }
@@ -88,7 +90,8 @@ type
     procedure btnTranscribeClick(Sender: TObject);
     { Cancels the run. }
     procedure btnCancelClick(Sender: TObject);
-    { Saves the segments as .txt, .srt or .vtt. }
+    { Saves the segments as .txt, .srt or .vtt, or the words as Audacity
+      labels or JSON. }
     procedure btnSaveClick(Sender: TObject);
     { Starts the device benchmark on the WAV file. }
     procedure btnBenchmarkClick(Sender: TObject);
@@ -114,6 +117,8 @@ type
   private
     { Segments of the last run (for Save). }
     FSegments: TWhisperSegmentArray;
+    { The last finished run, words included (for Save). }
+    FResult: TWhisperTranscription;
     { Device name of each cbDevice item ('' = default). }
     FDeviceNames: TStringList;
     { Folder of the models listed in cbModel. }
@@ -172,6 +177,13 @@ const
   BENCHMARK_SECONDS = 30;
   { Text of the default device item. }
   DEFAULT_DEVICE_TEXT = 'Default (whisper.cpp: first GPU)';
+  { Save dialog filters, in FILTER_* order. }
+  SAVE_FILTER = 'SubRip subtitles (*.srt)|*.srt|WebVTT subtitles (*.vtt)|*.vtt|Text (*.txt)|*.txt|' +
+    'Words: Audacity labels (*.txt)|*.txt|Words: JSON (*.json)|*.json';
+  { FilterIndex of the Audacity labels in SAVE_FILTER. }
+  FILTER_LABELS = 4;
+  { FilterIndex of the word JSON in SAVE_FILTER. }
+  FILTER_JSON = 5;
 
 procedure TfrmMain.FormCreate(Sender: TObject);
 var
@@ -310,6 +322,7 @@ begin
   cbModel.Enabled := not WhisperAPI1.Active;
   btnModel.Enabled := not WhisperAPI1.Active;
   cbDevice.Enabled := not WhisperAPI1.Active;
+  chkWords.Enabled := not WhisperAPI1.Active;
   btnBenchmark.Enabled := not WhisperAPI1.Busy and (cbModel.ItemIndex >= 0);
   btnTranscribe.Enabled := WhisperAPI1.Active and not WhisperAPI1.Busy;
   btnCancel.Enabled := WhisperAPI1.Busy;
@@ -356,6 +369,7 @@ begin
     chkAllModels.IsChecked := Ini.ReadBool(SETTINGS_SECTION, 'BenchmarkAllModels', False);
     edAudio.Text := Ini.ReadString(SETTINGS_SECTION, 'Audio', '');
     chkTranslate.IsChecked := Ini.ReadBool(SETTINGS_SECTION, 'Translate', False);
+    chkWords.IsChecked := Ini.ReadBool(SETTINGS_SECTION, 'WordTimings', False);
     SelectDevice(Ini.ReadString(SETTINGS_SECTION, 'Device', ''));
     Lang := Ini.ReadString(SETTINGS_SECTION, 'Language', WHISPER_LANGUAGE_AUTO);
     Idx := cbLanguage.Items.IndexOf(Lang);
@@ -381,6 +395,7 @@ begin
       Ini.WriteBool(SETTINGS_SECTION, 'BenchmarkAllModels', chkAllModels.IsChecked);
       Ini.WriteString(SETTINGS_SECTION, 'Audio', edAudio.Text);
       Ini.WriteBool(SETTINGS_SECTION, 'Translate', chkTranslate.IsChecked);
+      Ini.WriteBool(SETTINGS_SECTION, 'WordTimings', chkWords.IsChecked);
       Ini.WriteString(SETTINGS_SECTION, 'Device', SelectedDevice);
       if cbLanguage.ItemIndex >= 0 then
         Ini.WriteString(SETTINGS_SECTION, 'Language', cbLanguage.Items[cbLanguage.ItemIndex]);
@@ -426,6 +441,7 @@ begin
     SaveSettings;
     WhisperAPI1.ModelFile := SelectedModel;
     WhisperAPI1.Device := SelectedDevice;
+    WhisperAPI1.WordTimestamps := chkWords.IsChecked;
     AddLog('Loading ' + WhisperAPI1.ModelFile);
     WhisperAPI1.Active := True;   // OnLoaded or OnLoadFailed follows
   end;
@@ -436,6 +452,7 @@ procedure TfrmMain.btnTranscribeClick(Sender: TObject);
 begin
   memText.Lines.Clear;
   FSegments := nil;
+  FResult.Words := nil;
   ProgressBar1.Value := 0;
   if cbLanguage.ItemIndex >= 0 then
     WhisperAPI1.Language := cbLanguage.Items[cbLanguage.ItemIndex];
@@ -460,21 +477,36 @@ end;
 procedure TfrmMain.btnSaveClick(Sender: TObject);
 var
   Ext, Text: string;
+  SaveWords: Boolean;
 begin
-  SaveDialog1.Filter := 'SubRip subtitles (*.srt)|*.srt|WebVTT subtitles (*.vtt)|*.vtt|Text (*.txt)|*.txt';
+  SaveDialog1.Filter := SAVE_FILTER;
   SaveDialog1.DefaultExt := 'srt';
   SaveDialog1.FileName := ChangeFileExt(ExtractFileName(edAudio.Text), '.srt');
   if not SaveDialog1.Execute then
     Exit;
   Ext := LowerCase(ExtractFileExt(SaveDialog1.FileName));
-  if Ext = '.vtt' then
+  SaveWords := (SaveDialog1.FilterIndex = FILTER_LABELS) or (SaveDialog1.FilterIndex = FILTER_JSON) or
+    (Ext = '.json');
+  if SaveWords and (Length(FResult.Words) = 0) then
+  begin
+    AddLog('No words to save: tick Word timings, load the model again and transcribe');
+    Exit;
+  end;
+  if (SaveDialog1.FilterIndex = FILTER_JSON) or (Ext = '.json') then
+    Text := WhisperWordsToJson(FResult)
+  else if SaveDialog1.FilterIndex = FILTER_LABELS then
+    Text := WhisperWordsToLabels(FResult.Words)
+  else if Ext = '.vtt' then
     Text := WhisperSegmentsToVtt(FSegments)
   else if Ext = '.txt' then
     Text := WhisperSegmentsToText(FSegments, True)
   else
     Text := WhisperSegmentsToSrt(FSegments);
-  TFile.WriteAllText(SaveDialog1.FileName, Text, TEncoding.UTF8);
-  AddLog(Format('Saved %d segment(s) to %s', [Length(FSegments), SaveDialog1.FileName]));
+  WhisperSaveTextFile(SaveDialog1.FileName, Text);   // UTF-8 without BOM (Audacity, JSON)
+  if SaveWords then
+    AddLog(Format('Saved %d word(s) to %s', [Length(FResult.Words), SaveDialog1.FileName]))
+  else
+    AddLog(Format('Saved %d segment(s) to %s', [Length(FSegments), SaveDialog1.FileName]));
 end;
 
 procedure TfrmMain.btnBenchmarkClick(Sender: TObject);
@@ -486,6 +518,7 @@ begin
   if cbLanguage.ItemIndex >= 0 then
     WhisperAPI1.Language := cbLanguage.Items[cbLanguage.ItemIndex];
   WhisperAPI1.Translate := chkTranslate.IsChecked;
+  WhisperAPI1.WordTimestamps := chkWords.IsChecked;   // time what will be used: DTW costs some speed
   SaveSettings;
   Models := TStringList.Create;
   try
@@ -589,6 +622,10 @@ end;
 procedure TfrmMain.WhisperAPI1Complete(Sender: TObject; const AResult: TWhisperTranscription);
 begin
   FSegments := AResult.Segments;
+  FResult := AResult;
+  if Length(AResult.Words) > 0 then
+    memText.Lines.Add(Format('%d words with times (%s) - Save as... Audacity labels or JSON',
+      [Length(AResult.Words), WhisperWordTimingName(AResult.WordTiming)]));
   if AResult.ErrorMessage <> '' then
     lblStatus.Text := 'Failed'
   else if AResult.Cancelled then

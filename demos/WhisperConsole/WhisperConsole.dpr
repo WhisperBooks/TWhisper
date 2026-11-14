@@ -4,6 +4,7 @@
 
   Usage:
     WhisperConsole <model.bin> <audio.wav> [language] [--translate] [--device NAME] [--tokens]
+                   [--words] [--labels FILE] [--json FILE] [--no-dtw]
     WhisperConsole --check            (library + layout check, device list)
     WhisperConsole --bench <model.bin> <audio.wav> [language] [--seconds N|all]
                    [--devices CUDA0,Vulkan0] [--runs N] [--threads N] [--also <model2.bin>]...
@@ -13,6 +14,13 @@
   --threads: CPU threads (benchmark CPU device default: every logical processor;
              transcription default: whisper.cpp's, at most 4).
   --runs: timed runs per model and device; the median counts.
+  --words: word timings - the model is loaded with DTW (alignment heads from
+           the model file, flash attention off) and the words are printed.
+  --labels FILE: write the words as an Audacity label track (implies --words):
+           in Audacity, File > Import > Labels over the audio, to check by ear.
+  --json FILE: write segments and words as JSON (implies --words).
+  --no-dtw: word times from whisper.cpp's token time stamps instead of DTW
+           (to compare the two).
 
   It logs every step with its values: library file and version, system info,
   the layout check, the model, the audio as read, each segment as it
@@ -34,12 +42,15 @@ uses
   Whisper.Types,
   Whisper.API,
   Whisper.Audio,
+  Whisper.Words,
   Whisper.Core;
 
 type
   { Event handlers of the run and the library log. }
   TConsoleHandler = class
   public
+    { Print the tokens of each segment (--tokens). }
+    ShowTokens: Boolean;
     { Prints a segment as it arrives. }
     procedure Segment(Sender: TObject; const ASegment: TWhisperSegment);
     { Prints the progress in steps. }
@@ -62,11 +73,12 @@ var
 begin
   WriteLn(Format('[%s --> %s] %s', [WhisperTimeToStr(ASegment.T0), WhisperTimeToStr(ASegment.T1),
     Trim(ASegment.Text)]));
-  for I := 0 to High(ASegment.Tokens) do
-    if not ASegment.Tokens[I].Special then
-      WriteLn(Format('    token %d %-16s p=%.3f t0=%d t1=%d dtw=%d', [ASegment.Tokens[I].Id,
-        '"' + ASegment.Tokens[I].Text + '"', ASegment.Tokens[I].Probability,
-        ASegment.Tokens[I].T0, ASegment.Tokens[I].T1, ASegment.Tokens[I].TDtw]));
+  if ShowTokens then
+    for I := 0 to High(ASegment.Tokens) do
+      if not ASegment.Tokens[I].Special then
+        WriteLn(Format('    token %d %-16s p=%.3f t0=%d t1=%d dtw=%d', [ASegment.Tokens[I].Id,
+          '"' + ASegment.Tokens[I].Text + '"', ASegment.Tokens[I].Probability,
+          ASegment.Tokens[I].T0, ASegment.Tokens[I].T1, ASegment.Tokens[I].TDtw]));
 end;
 
 procedure TConsoleHandler.Progress(Sender: TObject; AProgress: Integer);
@@ -110,8 +122,8 @@ var
   Info: TWhisperWavInfo;
   Samples: TWhisperSamples;
   R: TWhisperTranscription;
-  ModelFile, AudioFile, Lang, Arg, DeviceName: string;
-  CheckOnly, Translate, Tokens, LayoutOk, Bench: Boolean;
+  ModelFile, AudioFile, Lang, Arg, DeviceName, LabelsFile, JsonFile: string;
+  CheckOnly, Translate, Tokens, LayoutOk, Bench, WantWords, NoDtw: Boolean;
   BenchSeconds: Double;
   BenchDevices, Threads, Runs: Integer;
   DeviceList: string;
@@ -133,6 +145,10 @@ begin
       CheckOnly := False;
       Translate := False;
       Tokens := False;
+      WantWords := False;
+      NoDtw := False;
+      LabelsFile := '';
+      JsonFile := '';
       Bench := False;
       BenchSeconds := WHISPER_CHUNK_SIZE;
       DeviceName := '';
@@ -189,6 +205,22 @@ begin
         end
         else if Arg = '--tokens' then
           Tokens := True
+        else if Arg = '--words' then
+          WantWords := True
+        else if Arg = '--no-dtw' then
+          NoDtw := True
+        else if (Arg = '--labels') and (I <= ParamCount) then
+        begin
+          LabelsFile := ParamStr(I);
+          WantWords := True;
+          Inc(I);
+        end
+        else if (Arg = '--json') and (I <= ParamCount) then
+        begin
+          JsonFile := ParamStr(I);
+          WantWords := True;
+          Inc(I);
+        end
         else if ModelFile = '' then
           ModelFile := Arg
         else if AudioFile = '' then
@@ -199,6 +231,7 @@ begin
       if not CheckOnly and ((ModelFile = '') or (AudioFile = '')) then
       begin
         WriteLn('Usage: WhisperConsole <model.bin> <audio.wav> [language] [--translate] [--device NAME] [--tokens]');
+        WriteLn('                      [--words] [--labels FILE] [--json FILE] [--no-dtw]');
         WriteLn('       WhisperConsole --check');
         WriteLn('       WhisperConsole --bench <model.bin> <audio.wav> [language] [--seconds N|all] [--devices A,B]');
         WriteLn('                      [--runs N] [--threads N] [--also <model2.bin>]...');
@@ -302,6 +335,9 @@ begin
         WriteLn(ErrOutput, 'Unknown device ', DeviceName, ' (see the device list above)');
         Exit;
       end;
+      if WantWords and not NoDtw and not WhisperEnableDtw(ModelFile, CP) then
+        WriteLn(ErrOutput, 'Cannot read the model header for the DTW alignment heads: ',
+          'word times come from token time stamps');
       Model := TWhisperModel.Create(ModelFile, CP);
       try
         WriteLn(Format('Model %s on %s: %s', [ModelFile, IfThen(DeviceName = '', 'the default device',
@@ -320,6 +356,8 @@ begin
             Params.Threads := Threads;
           Params.TokenTimestamps := Tokens;
           Run.IncludeTokens := Tokens;
+          Run.IncludeWords := WantWords;
+          Handler.ShowTokens := Tokens;
           Run.OnSegment := Handler.Segment;
           Run.OnProgress := Handler.Progress;
           WriteLn(Format('Transcribing: language %s, %d threads, %s', [Params.Language, Params.Threads,
@@ -328,6 +366,24 @@ begin
           WriteLn(Format('Result %d (%s): %d segment(s), language %s (%s), %.2f s of audio in %d ms',
             [R.ResultCode, WhisperResultText(R.ResultCode), Length(R.Segments), R.LanguageCode,
              R.LanguageName, R.AudioSeconds, R.ElapsedMs]));
+          if WantWords then
+          begin
+            WriteLn(Format('%d word(s), timing: %s', [Length(R.Words), WhisperWordTimingName(R.WordTiming)]));
+            if (LabelsFile = '') and (JsonFile = '') then
+              for I := 0 to High(R.Words) do
+                WriteLn(Format('  [%s --> %s] p=%.3f  %s', [WhisperTimeToStr(R.Words[I].T0),
+                  WhisperTimeToStr(R.Words[I].T1), R.Words[I].Probability, R.Words[I].Text]));
+            if LabelsFile <> '' then
+            begin
+              WhisperSaveTextFile(LabelsFile, WhisperWordsToLabels(R.Words));
+              WriteLn('Audacity labels written to ', LabelsFile);
+            end;
+            if JsonFile <> '' then
+            begin
+              WhisperSaveTextFile(JsonFile, WhisperWordsToJson(R));
+              WriteLn('JSON written to ', JsonFile);
+            end;
+          end;
           Lib.RemoveLogListener(Handler.Log);   // timings go to stderr
           if Assigned(Lib.Flat.whisper_print_timings) then
             Lib.Flat.whisper_print_timings(Model.Handle);

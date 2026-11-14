@@ -59,8 +59,10 @@ type
     property GPUDevice;
     { Compute device by name ('CPU', 'CUDA0', 'Vulkan1', ...; '' = default). }
     property Device;
-    { DTW token time stamps preset (wahNone = off). }
+    { DTW alignment heads (wahNone = from the model with WordTimestamps, else off). }
     property DtwPreset;
+    { Word timings: DTW on activation, words in every result. }
+    property WordTimestamps;
     { Check the record layout against whisper.h on activation. }
     property CheckLayout;
     { Language code or 'auto'. }

@@ -29,7 +29,13 @@
   what the loaded backends offer; @link(TCustomWhisper.BenchmarkFileAsync)
   times them - for ModelFile or for several models - and reports the
   fastest (OnBenchmarkComplete), for the program to store in Device (and
-  ModelFile). *)
+  ModelFile).
+
+  @bold(Word timings.) With @link(TCustomWhisper.WordTimestamps) on, the
+  model is loaded with DTW (alignment heads chosen from the model file,
+  flash attention off) and every result carries its words with start and
+  end times (TWhisperTranscription.Words; export with WhisperWordsToJson /
+  WhisperWordsToLabels from Whisper.Words). *)
 unit Whisper.Components;
 
 {$I Whisper.inc}
@@ -38,7 +44,7 @@ interface
 
 uses
   SysUtils, Classes, SyncObjs,
-  Whisper.Types, Whisper.API, Whisper.Core, Whisper.Audio;
+  Whisper.Types, Whisper.API, Whisper.Words, Whisper.Core, Whisper.Audio;
 
 {$ifndef FPC}
 const
@@ -224,6 +230,8 @@ type
     FOnBenchmarkComplete: TWhisperBenchmarkCompleteEvent;
     { Backing field of @link(DtwPreset). }
     FDtwPreset: TWhisperAlignmentHeadsPreset;
+    { Backing field of @link(WordTimestamps). }
+    FWordTimestamps: Boolean;
     { Backing field of @link(CheckLayout). }
     FCheckLayout: Boolean;
     { Backing field of @link(Language). }
@@ -304,8 +312,8 @@ type
     function BuildRunParams: TWhisperParams;
     { Starts a worker for samples or a file. }
     procedure StartWorker(const ASamples: TWhisperSamples; const AFileName: string);
-    { Context params from UseGPU, GPUDevice, FlashAttention, DtwPreset and
-      Device; ADeviceUsed receives the device they select. }
+    { Context params from UseGPU, GPUDevice, FlashAttention, WordTimestamps,
+      DtwPreset and Device; ADeviceUsed receives the device they select. }
     function BuildContextParams(ALib: TWhisperLib; out ADeviceUsed: string): TWhisperContextParams;
     { Starts a benchmark worker for samples or a file. }
     procedure StartBenchmark(const ASamples: TWhisperSamples; const AFileName: string;
@@ -408,9 +416,19 @@ type
       '' = UseGPU / GPUDevice decide. Overrides them when set. An unknown
       name falls back to them with a warning. Applies on activation. }
     property Device: string read FDevice write FDevice;
-    { DTW token time stamps: the preset of the model in use (wahNone = off).
-      Applies on activation. }
+    { DTW alignment heads. wahNone (default): chosen from the model file when
+      WordTimestamps is on, DTW off otherwise. Any other value turns DTW on
+      with those heads; wahCustom does not work here (the component holds
+      no custom heads - use TWhisperModel with WhisperEnableDtw). A
+      benchmark chooses the heads per model. Applies on activation. }
     property DtwPreset: TWhisperAlignmentHeadsPreset read FDtwPreset write FDtwPreset default wahNone;
+    { Word timings: load the model with DTW (WhisperEnableDtw: the model's
+      alignment heads, flash attention off - whisper.cpp cannot combine
+      them, so runs are somewhat slower) and give every result its words
+      with start and end times (TWhisperTranscription.Words). The model
+      part applies on activation; without DTW (a model whose header cannot
+      be read) the words come from token time stamps. Not with Vad. }
+    property WordTimestamps: Boolean read FWordTimestamps write FWordTimestamps default False;
     { Check the record layout against whisper.h on activation and refuse a
       library that does not match. }
     property CheckLayout: Boolean read FCheckLayout write FCheckLayout default True;
@@ -500,6 +518,7 @@ begin
   FFileName := AFileName;
   FRun := TWhisperRun.Create(AOwner.Model, AParams);
   FRun.IncludeTokens := AOwner.IncludeTokens;
+  FRun.IncludeWords := AOwner.WordTimestamps;
   FRun.OnSegment := RunSegment;
   FRun.OnProgress := RunProgress;
 end;
@@ -546,6 +565,8 @@ var
 begin
   FillChar(Info, SizeOf(Info), 0);
   R.Segments := nil;
+  R.Words := nil;
+  R.WordTiming := wwtNone;
   R.LanguageCode := '';
   R.LanguageName := '';
   R.ResultCode := 0;
@@ -976,6 +997,7 @@ begin
     FSyncRun := TWhisperRun.Create(FModel, P);
     try
       FSyncRun.IncludeTokens := FIncludeTokens;
+      FSyncRun.IncludeWords := FWordTimestamps;
       FSyncRun.OnSegment := SyncSegment;
       FSyncRun.OnProgress := SyncProgress;
       Result := FSyncRun.Execute(ASamples);
@@ -1014,8 +1036,15 @@ begin
   Result.use_gpu := FUseGPU;
   Result.flash_attn := FFlashAttention;
   Result.gpu_device := FGPUDevice;
-  Result.dtw_token_timestamps := FDtwPreset <> wahNone;
-  Result.dtw_aheads_preset := FDtwPreset;
+  if FWordTimestamps or (FDtwPreset <> wahNone) then
+  begin
+    if WhisperEnableDtw(FModelFile, Result, FDtwPreset) then
+      Log(wllInfo, Format('Word timings: DTW with the %s alignment heads, flash attention off ' +
+        '(whisper.cpp cannot combine them)', [WhisperDtwPresetName(Result.dtw_aheads_preset)]))
+    else if FModelFile <> '' then
+      Log(wllWarn, Format('Word timings: %s is not a readable ggml model, so no DTW alignment heads - ' +
+        'word times will come from token time stamps (less accurate)', [FModelFile]));
+  end;
   if (FDevice <> '') and not ALib.ContextParamsFor(FDevice, Result) then
   begin
     Devs := ALib.SelectableDevices;
@@ -1093,6 +1122,9 @@ begin
     FLogHooked := True;
   end;
   CP := BuildContextParams(Lib, Ignored);
+  // the benchmark chooses the DTW heads of each model itself
+  if FWordTimestamps or (FDtwPreset <> wahNone) then
+    CP.dtw_token_timestamps := True;
   P := BuildRunParams;
   try
     FBenchWorker := TWhisperBenchmarkWorker.Create(Self, P, CP, AModels, ASamples, AFileName,
@@ -1235,9 +1267,11 @@ begin
           if AMessage.FResult.ErrorMessage <> '' then
             Log(wllError, 'Transcription failed: ' + AMessage.FResult.ErrorMessage)
           else
-            Log(wllInfo, Format('Transcription %s: %d segment(s), language %s, %.2f s of audio in %d ms',
+            Log(wllInfo, Format('Transcription %s: %d segment(s), %d word(s) (timing: %s), language %s, ' +
+              '%.2f s of audio in %d ms',
               [IfThen(AMessage.FResult.Cancelled, 'cancelled', 'finished'),
-               Length(AMessage.FResult.Segments), AMessage.FResult.LanguageCode,
+               Length(AMessage.FResult.Segments), Length(AMessage.FResult.Words),
+               WhisperWordTimingName(AMessage.FResult.WordTiming), AMessage.FResult.LanguageCode,
                AMessage.FResult.AudioSeconds, AMessage.FResult.ElapsedMs]));
           if Assigned(FOnComplete) then
             FOnComplete(Self, AMessage.FResult);

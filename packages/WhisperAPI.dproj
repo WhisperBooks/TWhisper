@@ -185,6 +185,7 @@
         <DCCReference Include="..\lib\Whisper.DynLib.pas"/>
         <DCCReference Include="..\lib\Whisper.API.pas"/>
         <DCCReference Include="..\lib\Whisper.Audio.pas"/>
+        <DCCReference Include="..\lib\Whisper.Words.pas"/>
         <DCCReference Include="..\lib\Whisper.Core.pas"/>
         <DCCReference Include="..\lib\Whisper.Components.pas"/>
         <BuildConfiguration Include="Base">

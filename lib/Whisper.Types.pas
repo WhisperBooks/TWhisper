@@ -423,6 +423,10 @@ type
       such a piece decodes to a replacement character - use the segment
       text for display. }
     Text: string;
+    { The token's bytes as whisper.cpp gives them (UTF-8, possibly part of
+      a character); joined with the neighbouring tokens they give the exact
+      text (Whisper.Words builds words this way). }
+    Utf8: UTF8String;
     { Probability 0..1. }
     Probability: Single;
     { Start, 10 ms units (-1 without token time stamps). }
@@ -431,7 +435,9 @@ type
     T1: Int64;
     { DTW time stamp, 10 ms units (-1 without DTW). }
     TDtw: Int64;
-    { @true for special tokens (time stamps, [_BEG_], ...). }
+    { @true for every token that is not text: end of text and everything
+      after it in the vocabulary (start of transcript, language, time
+      stamps, [_BEG_], speaker turn, ...). }
     Special: Boolean;
   end;
   { Tokens of a segment. }
@@ -457,10 +463,48 @@ type
   { Segments of a run. }
   TWhisperSegmentArray = array of TWhisperSegment;
 
+  { Where the times of @link(TWhisperWord) come from. }
+  TWhisperWordTiming = (
+    { No words (not asked for). }
+    wwtNone,
+    { Dynamic time warping over the cross-attention of the alignment heads
+      (OpenAI's word_timestamps method): the accurate one. Needs the model
+      loaded with DTW (@code(WhisperEnableDtw), or the component's
+      WordTimestamps). }
+    wwtDtw,
+    { whisper.cpp's token time stamps (a heuristic on the time stamp token
+      probabilities): the fallback when the model was loaded without DTW;
+      noticeably less accurate. }
+    wwtTokenTimestamps
+  );
+
+  { One spoken word with its time (Pascal side, never passed to C). }
+  TWhisperWord = record
+    { The word, with the punctuation attached to it ('"Well,'), without
+      surrounding spaces. }
+    Text: string;
+    { Start, 10 ms units. }
+    T0: Int64;
+    { End, 10 ms units. }
+    T1: Int64;
+    { Mean probability of the word's tokens, 0..1 (low values mark words
+      the model was unsure of). }
+    Probability: Single;
+    { Index of the segment the word belongs to. }
+    Segment: Integer;
+  end;
+  { Words of a run, in spoken order. }
+  TWhisperWordArray = array of TWhisperWord;
+
   { Summary of a finished transcription. }
   TWhisperTranscription = record
     { Every segment, in order. }
     Segments: TWhisperSegmentArray;
+    { Every word, in order; filled only when words were asked for
+      (@code(TWhisperRun.IncludeWords), the component's WordTimestamps). }
+    Words: TWhisperWordArray;
+    { Where the word times come from (wwtNone without words). }
+    WordTiming: TWhisperWordTiming;
     { Code of the spoken (or forced) language, e.g. 'en'. }
     LanguageCode: string;
     { English name of that language. }

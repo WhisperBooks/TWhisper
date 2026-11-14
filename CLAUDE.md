@@ -123,7 +123,7 @@ speed never picks the model on its own (accuracy).
     the default values tested at the end of TWhisperLib.CheckLayout).
 - Say IN CAPITALS when a package rebuild is needed.
 
-## Handover - READ THIS FIRST (latest: end of session 4, 2026-11-14 00:00)
+## Handover - READ THIS FIRST (latest: session 5, 2026-11-14 afternoon)
 
 ### What the project is for
 TWhisper (component TWhisperAPI) is the speech-to-text engine of a bigger
@@ -147,14 +147,21 @@ standard test because its EPUB text is known.
   SRT, benchmark selects the fastest device and Load uses it, closing
   during a benchmark, settings restored.
 - Nothing tested yet on macOS / Linux / Android (Steam Deck = Linux test
-  box, AMD Z1 = Windows low-end box; both Vulkan).
-- Last push: 8ae84aa ("dlls"). NOT YET PUSHED (delivered in
-  TWhisper-settings.zip + this file): demos/WhisperDemo/src/uMain.pas
-  (settings saved as you go; Load / Benchmark disabled with no model),
-  CLAUDE.md. Clone a fresh copy and compare before the next delivery.
-- STALE FILES STILL IN THE REPO (pre-rename; owner to git rm):
-  Whisper.groupproj, packages/Whisper.dpk/.dproj,
-  packages/WhisperFMX.dpk/.dproj, packages/dclWhisperFMX.dpk/.dproj.
+  box, AMD Z1 = Windows low-end box; both Vulkan). EXCEPT: session 5 ran
+  lib/ + WhisperConsole compiled with FPC 3.0.0 against a Linux whisper.cpp
+  1.9.5 build here (layout check passed, DTW words end to end - History).
+- WORD TIMINGS (session 5) written, NOT YET TESTED BY THE OWNER on Windows /
+  real speech: lib/Whisper.Words (new unit), WordTimestamps on the
+  component, IncludeWords on TWhisperRun, console --words / --labels /
+  --json / --no-dtw, demo "Word timings" + save as Audacity labels / JSON.
+- Last push: 279269e ("HIP": HIP.md + CLAUDE.md from the HIP session). That
+  push ALSO put whisper-dev's README.md (over TWhisper's) and whisper-dev's
+  CMakeLists.txt into THIS repository by mistake. NOT YET PUSHED:
+  TWhisper-words.zip (session 5, rebased on 279269e: its README.md restores
+  TWhisper's README; delete list: CMakeLists.txt) and whisper-dev-fix.zip
+  (those two files, newer than whisper-dev's a9c1221: Linux Vulkan from
+  distribution packages, for the whisper-dev repository). Clone a fresh
+  copy and compare before the next delivery.
 - redistributable_bin/ and *.dll are git-ignored ON PURPOSE (local copy of
   whisper-dev's dlls/; CUDA DLLs exceed GitHub's 100 MB limit). Ship
   binaries as a GitHub Release when needed.
@@ -169,10 +176,15 @@ its dlls\ on PATH. Models: C:\models\whisper (10 models).
 Commands in READMEs: PowerShell needs the .\ prefix (.\WhisperConsole ...).
 
 ### NEXT (agreed order)
-1. WORD-LEVEL TIMINGS: token timestamps + DTW (DtwPreset matching the
-   model), tokens joined into words (start / end), checked by ear against
-   Aladdin at several points, per model and setting. Then a word API on
-   TWhisperRun / TWhisperAPI and word output (JSON or similar).
+1. WORD-LEVEL TIMINGS - code done (session 5). Owner: package rebuild,
+   then check BY EAR against Aladdin (WhisperConsole --labels, Audacity
+   File > Import > Labels) at several points, per model (large-v3-turbo,
+   medium.en, base.en, a quantised one) and DTW vs --no-dtw; also the
+   benchmark with Word timings on (cost of flash attention off). Then fix
+   what the ear finds. Known gap: DTW words are contiguous (a word after a
+   pause starts at the previous word's end unless the segment rules catch
+   it) - if highlighting / cues need real silences, trim word edges by
+   audio energy (or VAD probabilities) as a later step.
 2. Small log tidy: the abort lines whisper.cpp logs after a cancel
    ("encoder_begin_callback returned false - aborting", "failed to
    decode", "failed to encode") show as ERROR - log them as info while a
@@ -299,7 +311,7 @@ dylibs (else build with @loader_path rpath, README); the Android library
 folder (bare-name load path); a VCL twin; the token-data shim on ARM64
 (compiler record return, as TSteamAPI's Motion shim).
 
-## History (sessions 1-4, newest last)
+## History (sessions 1-5, newest last)
 Session 1 (2026-11-13): complete first version, NOT YET COMPILED (no Delphi / FPC in the
 cloud workspace). Verified here, without a Pascal compiler:
 - clang, 9 targets: record sizes / offsets of every bound struct (written to
@@ -382,3 +394,44 @@ PASSED (benchmark medium.en, 30 s: CUDA0 15.3x, Vulkan0 11.4x, Vulkan1
 2.3x, CPU 2.1x; earlier large-v3-turbo 30 s: CUDA0 24.5x, Vulkan0 14.6x -
 30 s figures swing with warm-up / language detection; whole-file runs are
 the fair comparison).
+Session 5 (2026-11-14, word timings): lib/Whisper.Words (model header ->
+DTW alignment heads; tokens -> words, a port of OpenAI's timing.py /
+tokenizer.py word grouping, punctuation merge and segment-boundary rules;
+JSON and Audacity label export); TWhisperRun.IncludeWords,
+TWhisperTranscription.Words / WordTiming, TWhisperModel.DtwEnabled,
+WhisperSaveTextFile (UTF-8, no BOM); component WordTimestamps; benchmark
+picks DTW heads per model. Found in whisper.cpp 1.9.5 source (5922450):
+- flash_attn (default ON) silently disables DTW -> WhisperEnableDtw turns
+  it off.
+- t_dtw = where the DTW path ENTERS the next token's row = OpenAI's END of
+  the token (OpenAI's start of token k = entry into row k, whose input is
+  the token before). So token start = previous token's t_dtw.
+- With DTW the new_segment_callback loop is "for (seg = size - n; seg < n;
+  ...)": no callbacks after the first window -> segments are also
+  collected in the encoder_begin callback (they are final by then).
+- DTW WHISPER_ASSERTs n_frames <= 2 * audio_ctx (AudioContext > 0 = process
+  dies) -> refused; its DTW decode runs without the abort callback (cancel
+  cannot hit its "DECODER FAILED" assert).
+- With VAD only segment t0/t1 are mapped back to original time, not token
+  times -> words + Vad refused.
+- TWhisperTokenInfo.Special was "id >= [_BEG_]"; now "id >= EOT" (SOT,
+  language, [_SOLM_] ... are not text either). New field Utf8 (raw bytes:
+  tokens can split a character; words are joined from bytes).
+- One deliberate deviation from OpenAI: a token made only of closing marks
+  ('!"', '."', '),') merges into the previous word (OpenAI only merges
+  single marks, leaving '!"' as a word - bad for dialogue-heavy books).
+TEST METHOD THAT WORKS IN THE CLOUD (no Delphi): FPC 3.0.0 x86_64-linux is
+committed in github.com/macmike/fpc-lambda (fpc-runtime/fpc3; sparse
+checkout ~100 MB; ppcx64 in lib/fpc/3.0.0, units beside it; link with
+-k-ldl -k-lc). It lacks TStringBuilder (3.2+) - give a scratch copy a
+small stand-in unit. Hugging Face is blocked and GitHub copies of models
+are LFS, so make a RANDOM-WEIGHT model: header + mel filters + vocab of
+whisper.cpp's models/for-tests-ggml-tiny.en.bin (ftype set to 0) followed
+by f32 tensors named and shaped as in whisper_model_load. It transcribes
+nonsense but runs every code path (DTW, callbacks, words, export). Done
+here: whisper.cpp 1.9.5 built (GGML_BACKEND_DL, CPU variants), FPC-built
+WhisperConsole: --check passed (111 values), DTW run over 44 s (two
+windows): tiny.en heads detected, flash attention off, all segments
+delivered, words / JSON / labels written; --no-dtw gives token-timestamp
+words. A unit test of WhisperBuildWords (split UTF-8 character, quotes,
+parentheses, pause, Japanese per-character) gave the expected words.

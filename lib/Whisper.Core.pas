@@ -39,7 +39,7 @@ interface
 
 uses
   SysUtils, Classes, SyncObjs, DateUtils,
-  Whisper.Types, Whisper.API;
+  Whisper.Types, Whisper.API, Whisper.Words;
 
 type
   { A loaded model (whisper_context). Thread-safe to share; transcriptions
@@ -89,8 +89,12 @@ type
     function ModelType: string;
     { Vocabulary size. }
     function VocabSize: Integer;
-    { One line describing the model, for logs. }
+    { One line describing the model, for logs (with the DTW alignment heads
+      when DTW is on). }
     function Description: string;
+    { @true when the model was loaded with DTW token times
+      (@code(WhisperEnableDtw)): runs then give accurate word timings. }
+    function DtwEnabled: Boolean;
 
     { The C context, for calls through @code(TWhisperLib.Flat). }
     property Handle: PWhisperContext read FCtx;
@@ -236,6 +240,10 @@ type
     FCount: Integer;
     { Backing field of @link(IncludeTokens). }
     FIncludeTokens: Boolean;
+    { Backing field of @link(IncludeWords). }
+    FIncludeWords: Boolean;
+    { End-of-text token of the model: ids from here on are not text. }
+    FEot: TWhisperToken;
     { Last progress reported (no duplicates). }
     FLastProgress: Integer;
     { First exception raised by an event handler inside a callback. }
@@ -261,7 +269,9 @@ type
     { Transcribes ASamples (mono, 16 kHz). Waits for other runs on the same
       model. Does not raise for whisper.cpp errors (see ResultCode /
       ErrorMessage of the result).
-      @raises(EWhisperError when ASamples is empty or an event handler raised.) }
+      @raises(EWhisperError when ASamples is empty, an event handler raised,
+        or the settings cannot work: IncludeWords with Vad, or AudioContext
+        on a model loaded with DTW (whisper.cpp would end the process).) }
     function Execute(const ASamples: TWhisperSamples): TWhisperTranscription;
     { Asks the run in progress to stop (any thread). It stops at the next
       check; the segments so far are kept and the result says Cancelled. }
@@ -272,6 +282,13 @@ type
     property Cancelled: Boolean read FCancel;
     { Fill TWhisperSegment.Tokens. }
     property IncludeTokens: Boolean read FIncludeTokens write FIncludeTokens;
+    { Fill TWhisperTranscription.Words (@code(WhisperBuildWords)); also
+      fills the tokens. The times come from DTW when the model was loaded
+      with it (@link(TWhisperModel.DtwEnabled)), else from whisper.cpp's
+      token time stamps, which are then turned on for the run (less
+      accurate). Not with Vad: whisper.cpp does not map token times back to
+      the original audio. }
+    property IncludeWords: Boolean read FIncludeWords write FIncludeWords;
     { Each new segment, on the thread of Execute. }
     property OnSegment: TWhisperSegmentEvent read FOnSegment write FOnSegment;
     { Progress 0..100, on the thread of Execute. }
@@ -349,7 +366,10 @@ type
       language 'auto'). Use the settings you will use for real. }
     property Params: TWhisperParams read FParams write FParams;
     { Model loading settings (flash attention, ...); use_gpu and gpu_device
-      are set per device. Default: the library's defaults. }
+      are set per device. With dtw_token_timestamps on, the alignment heads
+      are chosen per model (@code(WhisperEnableDtw); custom heads are kept),
+      so the timing includes the cost of word timings. Default: the
+      library's defaults. }
     property ContextParams: TWhisperContextParams read FContextParams write FContextParams;
     { Seconds of audio in the timed run (default 30: one full encoder window,
       the unit whisper.cpp works in); 0 or less = the whole audio. }
@@ -385,6 +405,11 @@ function WhisperSegmentsToSrt(const ASegments: TWhisperSegmentArray): string;
 { The segments as WebVTT subtitles (.vtt). }
 function WhisperSegmentsToVtt(const ASegments: TWhisperSegmentArray): string;
 
+{ Writes AText to AFileName as UTF-8 without a byte order mark (what
+  Audacity labels, JSON and subtitle files expect), replacing the file.
+  @raises(EFCreateError / EStreamError when the file cannot be written.) }
+procedure WhisperSaveTextFile(const AFileName, AText: string);
+
 implementation
 
 uses
@@ -418,6 +443,16 @@ end;
 function EncoderBeginTrampoline(ctx: PWhisperContext; state: PWhisperState;
   user_data: Pointer): Boolean; cdecl;
 begin
+  // With DTW, whisper.cpp 1.9.5 reports the segments of the first window
+  // only (its callback loop runs "seg < n_segments" from the total minus
+  // n_segments). Every window's segments - DTW times included - are final
+  // when the next window starts, so they are collected here as well.
+  try
+    TWhisperRun(user_data).CollectNew(ctx);
+  except
+    on E: Exception do
+      TWhisperRun(user_data).HandlerFailed(E);
+  end;
   Result := not TWhisperRun(user_data).FCancel;
 end;
 
@@ -501,6 +536,21 @@ begin
     Result := SB.ToString;
   finally
     SB.Free;
+  end;
+end;
+
+procedure WhisperSaveTextFile(const AFileName, AText: string);
+var
+  S: TFileStream;
+  U: UTF8String;
+begin
+  U := UTF8String(AText);
+  S := TFileStream.Create(AFileName, fmCreate);
+  try
+    if U <> '' then
+      S.WriteBuffer(PAnsiChar(U)^, Length(U));
+  finally
+    S.Free;
   end;
 end;
 
@@ -603,6 +653,15 @@ const
 begin
   Result := Format('%s, %s, vocabulary %d, GPU %s', [ModelType, LANGS[IsMultilingual], VocabSize,
     BoolToStr(FContextParams.use_gpu, True)]);
+  if DtwEnabled then
+    Result := Result + Format(', DTW word timings (alignment heads %s, flash attention %s)',
+      [WhisperDtwPresetName(FContextParams.dtw_aheads_preset), BoolToStr(FContextParams.flash_attn, True)]);
+end;
+
+function TWhisperModel.DtwEnabled: Boolean;
+begin
+  Result := FContextParams.dtw_token_timestamps and (FContextParams.dtw_aheads_preset <> wahNone) and
+    not FContextParams.flash_attn;
 end;
 
 { TWhisperParams }
@@ -703,7 +762,6 @@ var
   F: PWhisperFlat;
   N, I: Integer;
   TD: TWhisperTokenData;
-  Beg: TWhisperToken;
 begin
   F := FModel.Lib.Flat;
   Result.Index := AIndex;
@@ -717,25 +775,22 @@ begin
   Result.SpeakerTurnNext := Assigned(F.whisper_full_get_segment_speaker_turn_next) and
     F.whisper_full_get_segment_speaker_turn_next(ACtx, AIndex);
   Result.Tokens := nil;
-  if not FIncludeTokens or not Assigned(F.whisper_full_n_tokens) or
+  if not (FIncludeTokens or FIncludeWords) or not Assigned(F.whisper_full_n_tokens) or
     not Assigned(F.whisper_full_get_token_text) or not Assigned(F.whisper_full_get_token_data) then
     Exit;
-  if Assigned(F.whisper_token_beg) then
-    Beg := F.whisper_token_beg(ACtx)
-  else
-    Beg := High(TWhisperToken);
   N := F.whisper_full_n_tokens(ACtx, AIndex);
   SetLength(Result.Tokens, N);
   for I := 0 to N - 1 do
   begin
     TD := FModel.Lib.GetTokenData(ACtx, nil, AIndex, I);
     Result.Tokens[I].Id := TD.id;
-    Result.Tokens[I].Text := WhisperStr(F.whisper_full_get_token_text(ACtx, AIndex, I));
+    Result.Tokens[I].Utf8 := UTF8String(F.whisper_full_get_token_text(ACtx, AIndex, I));
+    Result.Tokens[I].Text := WhisperStr(PAnsiChar(Result.Tokens[I].Utf8));
     Result.Tokens[I].Probability := TD.p;
     Result.Tokens[I].T0 := TD.t0;
     Result.Tokens[I].T1 := TD.t1;
     Result.Tokens[I].TDtw := TD.t_dtw;
-    Result.Tokens[I].Special := TD.id >= Beg;
+    Result.Tokens[I].Special := TD.id >= FEot;
   end;
 end;
 
@@ -762,9 +817,22 @@ var
   F: PWhisperFlat;
   Start: TDateTime;
   LangId: Integer;
+  Timing: TWhisperWordTiming;
 begin
   if Length(ASamples) = 0 then
     raise EWhisperError.Create('No audio to transcribe');
+  if FIncludeWords and FParams.Vad then
+    raise EWhisperError.Create('Word timings do not work with Vad: whisper.cpp maps only segment times, ' +
+      'not token times, back to the original audio');
+  if FModel.DtwEnabled and (FParams.AudioContext <> 0) then
+    raise EWhisperError.CreateFmt('AudioContext must be 0 for a model loaded with DTW (whisper.cpp asserts ' +
+      'that DTW sees the whole %d s window and would end the process)', [WHISPER_CHUNK_SIZE]);
+  if not FIncludeWords then
+    Timing := wwtNone
+  else if FModel.DtwEnabled then
+    Timing := wwtDtw
+  else
+    Timing := wwtTokenTimestamps;
   FModel.Lock;
   try
     FRunning := True;
@@ -775,7 +843,15 @@ begin
     FLastProgress := -1;
     Ctx := FModel.Handle;
     F := FModel.Lib.Flat;
+    if Assigned(F.whisper_token_eot) then
+      FEot := F.whisper_token_eot(Ctx)
+    else if Assigned(F.whisper_token_beg) then
+      FEot := F.whisper_token_beg(Ctx)
+    else
+      FEot := High(TWhisperToken);
     P := FParams.Build(FModel.IsMultilingual);
+    if Timing = wwtTokenTimestamps then
+      P.token_timestamps := True;
     P.new_segment_callback := NewSegmentTrampoline;
     P.new_segment_callback_user_data := Self;
     P.progress_callback := ProgressTrampoline;
@@ -817,6 +893,10 @@ begin
       Result.ErrorMessage := WhisperResultText(Result.ResultCode)
     else
       Result.ErrorMessage := '';
+    Result.Words := nil;
+    Result.WordTiming := Timing;
+    if Timing <> wwtNone then
+      Result.Words := WhisperBuildWords(Result.Segments, Result.LanguageCode, Timing);
   finally
     FRunning := False;
     FModel.Unlock;
@@ -910,6 +990,10 @@ begin
   Result.Speed := 0;
   Result.Text := '';
   CP := FContextParams;
+  // DTW alignment heads belong to a model: choose them for this one
+  if CP.dtw_token_timestamps and (CP.dtw_aheads_preset <> wahCustom) and
+    not WhisperEnableDtw(AModelFile, CP) then
+    CP.dtw_token_timestamps := False;
   if not TWhisperLib.Instance.ContextParamsFor(ADevice.Name, CP) then
   begin
     Result.ErrorMessage := Format('Device %s cannot be selected for whisper.cpp', [ADevice.Name]);

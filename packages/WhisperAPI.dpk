@@ -37,6 +37,7 @@ contains
   Whisper.DynLib in '..\lib\Whisper.DynLib.pas',
   Whisper.API in '..\lib\Whisper.API.pas',
   Whisper.Audio in '..\lib\Whisper.Audio.pas',
+  Whisper.Words in '..\lib\Whisper.Words.pas',
   Whisper.Core in '..\lib\Whisper.Core.pas',
   Whisper.Components in '..\lib\Whisper.Components.pas';
 
