@@ -268,14 +268,39 @@ GPU (model unknown); same for Intel Arc. Until then Vulkan covers both.
 - HIP: use the HIP SDK 7.x (Windows 11 only; 6.4.2 was the last for Win10;
   7.x renamed the runtime to amdhip64_7.dll / amd_comgr_3.dll - it comes
   with the user's AMD driver, a too-old driver just means ggml-hip fails to
-  load and Vulkan remains). whisper-dev to-do: add the Ryzen AI targets
-  (gfx1150 / gfx1151 ...) to WHISPER_DEV_HIP_TARGETS, check the copied
+  load and Vulkan remains). OFFICIAL 7.2 WINDOWS LIST (AMD's system
+  requirements page, docs-7.2): gfx1200 / gfx1201 (RX 9060 / 9070, AI PRO
+  R9700), gfx1100 / gfx1101 / gfx1102 (RX 7600-7900, PRO W7700-W7900),
+  gfx1150 (Ryzen AI 300, AI 9 400), gfx1151 (Ryzen AI Max 380-395,
+  MAX+ 49x). RDNA2 (RX 6000, gfx1030-1032) and older are UNSUPPORTED in
+  7.2 -> Vulkan for them. whisper-dev to-do: targets
+  gfx1100;gfx1101;gfx1102;gfx1150;gfx1151;gfx1200;gfx1201 (drop gfx1030), check the copied
   library names against 7.x, README note. Z1 (gfx1103) is not on AMD's
   Windows list.
+  Steam Machine (2026): discrete semi-custom RDNA3, 28 CU, 8 GB GDDR6 =
+  Navi 33 / gfx1102 (TechPowerUp, per owner) - the RX 7600's target, so a
+  gfx1102 HIP build should run on it under Windows; on SteamOS (Linux)
+  use Vulkan (RADV); ship the .so files beside the app (read-only OS).
 - Intel Arc: Vulkan now; candidates ggml-sycl (oneAPI DPC++ / icx: a
   second tree like HIP; large oneAPI runtime DLLs) and the OpenVINO GPU
   device (see NPU plan). The owner's Intel iGPU can do a first SYCL /
   OpenVINO smoke test, but Arc numbers need an Arc card.
+
+### FMX on Linux / Steam - reuse TSteamAPI's findings (same owner)
+TSteamAPI's CLAUDE.md and docs/ (fmx-steamos-gtk3-bug*.md,
+fmx-menu-bug-fix.md) cover FMXLinux; apply them to the demo when Linux
+starts: use Steam Linux Runtime 3.0 "sniper" (4.0 has no GTK 3: "GTK 3 is
+required" + runtime error 217); add TSteamAPI's FmxLinuxGtkGlobal unit
+(dlopen libgtk-3 / libgdk-3 RTLD_GLOBAL - otherwise FMX's global dlsym
+misses GTK inside pressure-vessel and creating a TListBox (combo-box
+popups too) calls nil = AV); FmxLinuxMenu if the demo gets a menu (GTK
+bar shows first letters only); libfmux is unpacked by FMXLinux itself
+(~/.fmxlinux), not a depot file; the game folder is NOT writable in the
+runtime - settings / logs / output under the user's folders (XDG); log to
+stderr for "%command% > file 2>&1" captures. SteamOS's remaining issues in
+TSteamAPI are 3D only (a Gorilla3D bug, owner 2026-11-14) - they do not
+affect TWhisper. Our own libs:
+whisper / ggml .so beside the exe, loaded with RTLD_LAZY (local) - fine.
 
 ### Other open items
 WhisperConsole --check on each platform; macOS dyld reuse of preloaded
