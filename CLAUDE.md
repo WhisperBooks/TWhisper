@@ -244,6 +244,22 @@ Found in the pinned whisper.cpp (5922450):
   gain on a modern CPU. Quantised models (q5_0 / q8_0) are the bigger CPU
   win - benchmark them, and check their word-timing accuracy.
 
+### Future product (add-on, AFTER the book sync works): EPUB illustration
+Owner's idea: illustrate public-domain EPUBs with local image models.
+Sold app = model-agnostic plug-in host; ship only an Apache-2.0 model
+(FLUX.2 [klein] 4B); users fetch others (e.g. FLUX.2 dev, non-commercial,
+gated on Hugging Face) themselves; never market a non-commercial model as a
+feature. Engine candidates: stable-diffusion.cpp (ggml, one DLL - same
+loading / device / benchmark pattern as TWhisper) or ComfyUI over its local
+HTTP API. User flow: pick a style from samples -> pick each main
+character from candidates (= reference images for consistency) -> choose
+density -> unattended run -> review gallery -> export (figures + alt text,
+alongside the Media Overlays). Keep the model / seed / references per book.
+Scene and character extraction needs an LLM (llama.cpp: ggml again).
+Keep the EPUB layer and the engine-loading pattern general so this fits.
+Copyright: Pooh text is UK public domain from 2027-01-01 (Milne d. 1956),
+Shepard's drawings until end of 2046, Disney's designs separately.
+
 ### Other open items
 WhisperConsole --check on each platform; macOS dyld reuse of preloaded
 dylibs (else build with @loader_path rpath, README); the Android library
