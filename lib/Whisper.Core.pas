@@ -391,6 +391,12 @@ type
     FMaxSeconds: Double;
     { Backing field of @link(WarmupSeconds). }
     FWarmupSeconds: Double;
+    { Backing field of @link(StartSeconds). }
+    FStartSeconds: Double;
+    { Backing field of @link(SpeechShare). }
+    FSpeechShare: Double;
+    { The stretch has been chosen (StartSeconds was -1). }
+    FChosen: Boolean;
     { Backing field of @link(CpuThreads). }
     FCpuThreads: Integer;
     { Backing field of @link(Runs). }
@@ -403,8 +409,12 @@ type
     FOnStart: TWhisperBenchmarkStartEvent;
     { Backing field of @link(OnResult). }
     FOnResult: TWhisperBenchmarkEvent;
-    { The first ASeconds of the audio. }
+    { ASeconds of the audio from StartSeconds (all of it for 0 or less);
+      chooses the stretch first when StartSeconds is -1. }
     function Slice(ASeconds: Double): TWhisperSamples;
+    { Sets FStartSeconds / FSpeechShare once, from WhisperFindSpeech when
+      StartSeconds is -1. }
+    procedure ChooseStretch;
   public
     { A benchmark of AModelFile on ASamples (at least a few seconds of
       speech; MaxSeconds of it are used). Add more models to ModelFiles to
@@ -453,6 +463,15 @@ type
     property Runs: Integer read FRuns write FRuns;
     { Seconds of audio in the warm-up run (default 5). }
     property WarmupSeconds: Double read FWarmupSeconds write FWarmupSeconds;
+    { Where the timed stretch starts, seconds: -1 (default) = chosen by
+      @link(WhisperFindSpeech) - speech all through, not within 30 s of the
+      start or the end (Whisper may skip a recording's spoken intro, and a
+      fixed point such as the middle may fall in a gap between sections).
+      Read after Run for the start used. Ignored when MaxSeconds is 0 or
+      less (the whole audio). }
+    property StartSeconds: Double read FStartSeconds write FStartSeconds;
+    { Share of the timed stretch that has sound (0 .. 1), after Run. }
+    property SpeechShare: Double read FSpeechShare;
     { @true after Cancel. }
     property Cancelled: Boolean read FCancel;
     { Before each model / device pair (on the calling thread). }
@@ -463,6 +482,22 @@ type
 
 { Text of a whisper_full result code. }
 function WhisperResultText(ACode: Integer): string;
+
+{ Where to time ASeconds of ASamples for a benchmark: a stretch that is
+  speech all through, so the speed is not measured on silence. Not within
+  AEdgeSeconds of the start or the end - Whisper may skip what is there
+  (a LibriVox recording's spoken intro, about 26 s; a closing notice) -
+  and, between those, the first stretch whose 100 ms frames are at most
+  25 % quiet (quieter than a tenth of the loud end of the recording, its
+  90th percentile; ordinary reading pauses make 10 - 20 %); when none is,
+  the stretch with the most sound. A
+  stretch never starts at a fixed point (the middle may be a gap between
+  sections). Audio too short for the edges: the stretch in the middle;
+  shorter than ASeconds: the start.
+  @param(ASpeechShare  Receives the share of the stretch that has sound.)
+  @returns(The stretch's start, seconds.) }
+function WhisperFindSpeech(const ASamples: TWhisperSamples; ASeconds: Double; out ASpeechShare: Double;
+  AEdgeSeconds: Double = 30): Double;
 
 { The segments as plain text, one per line.
   @param(ATimestamps  Prefix each line with [start --> end].) }
@@ -524,6 +559,19 @@ const
 function WhisperCleanTranscription(var AResult: TWhisperTranscription;
   const APrompt: string): TWhisperCleanStats;
 
+{ Takes the silence off the ends of AResult's words, from the audio they
+  were transcribed from (ASamples: the run's samples, so the words' times
+  are in them). DTW starts the first word after a pause in that pause -
+  on Moby-Dick the word after a full stop began with about half a second
+  of silence (median 0.48 s), so a reader lit the next sentence while the
+  narrator was still pausing. A word whose first (or last) 50 ms or more
+  are quieter than 5 % of the loud end of the recording (its 90th
+  percentile, 10 ms frames) starts (ends) 20 ms before the first (after
+  the last) louder frame instead; it keeps at least 80 ms and never moves
+  outwards. Run it per part, before WhisperAppendTranscription.
+  @returns(How many word edges moved.) }
+function WhisperTrimWordSilence(var AResult: TWhisperTranscription; const ASamples: TWhisperSamples): Integer;
+
 { Puts APart (a run over a stretch of the same recording, e.g. a gap run
   again) into ATarget in time order, its times moved by AOffsetSeconds:
   its segments go before the first segment of ATarget that starts at or
@@ -581,6 +629,101 @@ end;
 function AbortTrampoline(data: Pointer): Boolean; cdecl;
 begin
   Result := TWhisperRun(data).FCancel;
+end;
+
+function WhisperFindSpeech(const ASamples: TWhisperSamples; ASeconds: Double; out ASpeechShare: Double;
+  AEdgeSeconds: Double): Double;
+const
+  { Samples per frame (100 ms). }
+  FRAME = WHISPER_SAMPLE_RATE div 10;
+  { Most quiet frames a stretch may have: ordinary reading has 10 - 20 %
+    (pauses between words and sentences; measured on a LibriVox reading),
+    a gap between sections far more. }
+  MAX_QUIET = 0.25;
+  { Histogram bins for the percentile. }
+  BINS = 1000;
+var
+  NFrames, W, Edge, First, Last, I, J, Quiet, BestQuiet, BestAt, At: Integer;
+  Levels: array of Single;
+  Hist: array of Integer;
+  Sum, Threshold, Top: Double;
+begin
+  ASpeechShare := 0;
+  Result := 0;
+  NFrames := Length(ASamples) div FRAME;
+  W := Max(1, Round(ASeconds * 10));
+  if NFrames = 0 then
+    Exit;
+  // RMS level per frame
+  Levels := nil;
+  SetLength(Levels, NFrames);
+  for I := 0 to NFrames - 1 do
+  begin
+    Sum := 0;
+    for J := I * FRAME to I * FRAME + FRAME - 1 do
+      Sum := Sum + Sqr(ASamples[J]);
+    Levels[I] := Sqrt(Sum / FRAME);
+  end;
+  // the loud end of the recording: the 90th percentile of the levels,
+  // from a histogram (no sort)
+  Top := 0;
+  for I := 0 to NFrames - 1 do
+    if Levels[I] > Top then
+      Top := Levels[I];
+  Hist := nil;
+  SetLength(Hist, BINS);
+  for I := 0 to NFrames - 1 do
+    Inc(Hist[Min(BINS - 1, Trunc(Levels[I] / Max(Top, 1E-9) * BINS))]);
+  J := 0;
+  I := 0;
+  while (I < BINS - 1) and (J + Hist[I] < (NFrames * 9) div 10) do
+  begin
+    Inc(J, Hist[I]);
+    Inc(I);
+  end;
+  Threshold := Max(0.002, 0.1 * (I + 1) * Top / BINS);
+  // the range a stretch may start in
+  Edge := Round(AEdgeSeconds * 10);
+  if W >= NFrames then
+  begin
+    First := 0;
+    Last := 0;
+    W := NFrames;
+  end
+  else if NFrames - 2 * Edge < W then
+  begin
+    // too short to keep clear of both edges: the middle
+    First := (NFrames - W) div 2;
+    Last := First;
+  end
+  else
+  begin
+    First := Edge;
+    Last := NFrames - Edge - W;
+  end;
+  // slide the stretch: quiet frames counted as it goes
+  Quiet := 0;
+  for I := First to First + W - 1 do
+    if Levels[I] < Threshold then
+      Inc(Quiet);
+  BestQuiet := Quiet;
+  BestAt := First;
+  At := First;
+  while (Quiet > MAX_QUIET * W) and (At < Last) do
+  begin
+    if Levels[At] < Threshold then
+      Dec(Quiet);
+    if Levels[At + W] < Threshold then
+      Inc(Quiet);
+    Inc(At);
+    if Quiet < BestQuiet then
+    begin
+      BestQuiet := Quiet;
+      BestAt := At;
+    end;
+  end;
+  Result := BestAt / 10;
+  ASpeechShare := 1 - BestQuiet / W;
 end;
 
 function WhisperResultText(ACode: Integer): string;
@@ -809,6 +952,96 @@ begin
     end
     else
       Inc(I);
+  end;
+end;
+
+function WhisperTrimWordSilence(var AResult: TWhisperTranscription; const ASamples: TWhisperSamples): Integer;
+const
+  { Samples per frame (10 ms = one tick). }
+  FRAME = WHISPER_SAMPLE_RATE div WHISPER_TICKS_PER_SECOND;
+  { Quiet: below this share of the 90th percentile of the frame levels. }
+  QUIET_SHARE = 0.08;
+  { Shortest quiet stretch at a word's edge that is taken off, frames. }
+  MIN_QUIET = 5;
+  { Kept before the first (after the last) loud frame, frames. }
+  LEAD = 2;
+  { Shortest word left, frames. }
+  MIN_WORD = 8;
+  { Histogram bins for the percentile. }
+  BINS = 1000;
+var
+  NFrames, I, J, K, F0, F1, Count: Integer;
+  Levels: array of Single;
+  Hist: array of Integer;
+  Sum, Top, Threshold: Double;
+begin
+  Result := 0;
+  NFrames := Length(ASamples) div FRAME;
+  if (NFrames = 0) or (Length(AResult.Words) = 0) then
+    Exit;
+  Levels := nil;
+  SetLength(Levels, NFrames);
+  Top := 0;
+  for I := 0 to NFrames - 1 do
+  begin
+    Sum := 0;
+    for J := I * FRAME to I * FRAME + FRAME - 1 do
+      Sum := Sum + Sqr(ASamples[J]);
+    Levels[I] := Sqrt(Sum / FRAME);
+    if Levels[I] > Top then
+      Top := Levels[I];
+  end;
+  if Top <= 0 then
+    Exit;
+  // the 90th percentile from a histogram
+  Hist := nil;
+  SetLength(Hist, BINS);
+  for I := 0 to NFrames - 1 do
+    Inc(Hist[Min(BINS - 1, Trunc(Levels[I] / Top * BINS))]);
+  Count := 0;
+  I := 0;
+  while (I < BINS - 1) and (Count + Hist[I] < (NFrames * 9) div 10) do
+  begin
+    Inc(Count, Hist[I]);
+    Inc(I);
+  end;
+  Threshold := QUIET_SHARE * (I + 1) * Top / BINS;
+  for K := 0 to High(AResult.Words) do
+  begin
+    if (AResult.Words[K].T0 < 0) or (AResult.Words[K].T1 > NFrames) then
+      Continue;
+    F0 := Integer(AResult.Words[K].T0);
+    F1 := Integer(AResult.Words[K].T1);
+    if (F0 < 0) or (F1 > NFrames) or (F1 - F0 <= MIN_WORD) then
+      Continue;
+    // the start
+    I := F0;
+    while (I < F1) and (Levels[I] < Threshold) do
+      Inc(I);
+    if (I - F0 >= MIN_QUIET) and (F1 - (I - LEAD) >= MIN_WORD) then
+    begin
+      AResult.Words[K].T0 := I - LEAD;
+      F0 := I - LEAD;
+      Inc(Result);
+    end
+    else if (I - F0 >= MIN_QUIET) and (F1 - F0 > MIN_WORD) then
+    begin
+      // quiet nearly to its end: DTW put the word in the pause and it is
+      // said at the start of the next one ("It" after a full stop) - its
+      // last 80 ms only, so the pause is not lit
+      AResult.Words[K].T0 := F1 - MIN_WORD;
+      F0 := F1 - MIN_WORD;
+      Inc(Result);
+    end;
+    // the end
+    I := F1 - 1;
+    while (I > F0) and (Levels[I] < Threshold) do
+      Dec(I);
+    if (F1 - 1 - I >= MIN_QUIET) and (I + 1 + LEAD - F0 >= MIN_WORD) then
+    begin
+      AResult.Words[K].T1 := I + 1 + LEAD;
+      Inc(Result);
+    end;
   end;
 end;
 
@@ -1659,6 +1892,7 @@ begin
   FContextParams := TWhisperLib.Instance.DefaultContextParams;
   FMaxSeconds := DEFAULT_MAX_SECONDS;
   FWarmupSeconds := DEFAULT_WARMUP_SECONDS;
+  FStartSeconds := -1;
   FRuns := 1;
 end;
 
@@ -1678,15 +1912,50 @@ begin
     R.Cancel;
 end;
 
+procedure TWhisperBenchmark.ChooseStretch;
+var
+  Share: Double;
+begin
+  if FChosen then
+    Exit;
+  FChosen := True;
+  if FMaxSeconds <= 0 then
+  begin
+    // the whole audio
+    FStartSeconds := 0;
+    WhisperFindSpeech(FSamples, Length(FSamples) / WHISPER_SAMPLE_RATE, Share, 0);
+    FSpeechShare := Share;
+  end
+  else if FStartSeconds < 0 then
+  begin
+    FStartSeconds := WhisperFindSpeech(FSamples, FMaxSeconds, Share);
+    FSpeechShare := Share;
+  end
+  else
+  begin
+    // given: its share of sound, for the report
+    WhisperFindSpeech(Copy(FSamples, Min(Length(FSamples), Round(FStartSeconds * WHISPER_SAMPLE_RATE)),
+      Round(FMaxSeconds * WHISPER_SAMPLE_RATE)), FMaxSeconds, Share, 0);
+    FSpeechShare := Share;
+  end;
+end;
+
 function TWhisperBenchmark.Slice(ASeconds: Double): TWhisperSamples;
 var
-  N: Integer;
+  N, From: Integer;
 begin
+  ChooseStretch;
   if ASeconds <= 0 then
-    N := Length(FSamples)
+  begin
+    From := 0;
+    N := Length(FSamples);
+  end
   else
-    N := Min(Length(FSamples), Max(1, Integer(Round(ASeconds * WHISPER_SAMPLE_RATE))));
-  Result := Copy(FSamples, 0, N);
+  begin
+    From := Min(Length(FSamples) - 1, Max(0, Integer(Round(FStartSeconds * WHISPER_SAMPLE_RATE))));
+    N := Min(Length(FSamples) - From, Max(1, Integer(Round(ASeconds * WHISPER_SAMPLE_RATE))));
+  end;
+  Result := Copy(FSamples, From, N);
 end;
 
 class function TWhisperBenchmark.Best(const AResults: TWhisperBenchmarkArray;
@@ -1725,6 +1994,8 @@ begin
   Result.Runs := 0;
   Result.Threads := 0;
   Result.AudioSeconds := 0;
+  Result.StartSeconds := 0;
+  Result.SpeechShare := 0;
   Result.Speed := 0;
   Result.Text := '';
   CP := FContextParams;
@@ -1792,6 +2063,8 @@ begin
       Result.RunMs := Times[High(Times) div 2];
       Result.Runs := Length(Times);
       Result.AudioSeconds := Length(Timed) / WHISPER_SAMPLE_RATE;
+      Result.StartSeconds := FStartSeconds;
+      Result.SpeechShare := FSpeechShare;
       Result.Speed := Result.AudioSeconds * 1000 / Max(Int64(1), Result.RunMs);
       Result.Text := Trim(WhisperSegmentsToText(T.Segments));
       Result.Ok := True;

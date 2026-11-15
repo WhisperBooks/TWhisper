@@ -26,7 +26,7 @@ interface
 
 uses
   SysUtils, Classes,
-  Whisper.Types, Whisper.Audio, Whisper.Core,
+  Whisper.Types, Whisper.Audio, Whisper.Core, Whisper.Align,
   FFmpeg.API, FFmpeg.Media;
 
 type
@@ -51,6 +51,21 @@ type
   end;
   { The parts, in order. }
   TWhisperAudioPartArray = array of TWhisperAudioPart;
+
+  { A book word's time in ITS audio file (@link(WhisperWordFileTimes)):
+    what an EPUB media overlay needs. }
+  TWhisperFileTime = record
+    { Index of the word in the word list that was aligned. }
+    Word: Integer;
+    { Index of the audio file (in the list given). }
+    FileIndex: Integer;
+    { Start in that file, seconds. }
+    StartTime: Double;
+    { End in that file, seconds. }
+    EndTime: Double;
+  end;
+  { Book words with their file times, in book order. }
+  TWhisperFileTimeArray = array of TWhisperFileTime;
 
   { The parts of a recording, read one at a time. }
   TWhisperAudioSet = class
@@ -115,6 +130,27 @@ function WhisperNaturalCompare(const A, B: string): Integer;
   file, title, start and end in the file, offset on the joined time line,
   length (seconds). }
 function WhisperAudioPartsToJson(const AParts: TWhisperAudioPartArray): string;
+
+{ WhisperWordsToJson of AResult with the parts of the recording added as
+  "parts" (none: as WhisperWordsToJson) - what WhisperTranscriptionFromJson
+  reads back. }
+function WhisperTranscriptionToJson(const AResult: TWhisperTranscription; const AParts: TWhisperAudioPartArray): string;
+
+{ The part of AParts that time AT (10 ms units, on the joined time line)
+  is in: the last part starting at or before it (0 when none). }
+function WhisperPartAt(const AParts: TWhisperAudioPartArray; AT: Int64): Integer;
+
+{ The audio files of AParts in order of first appearance (a new list). }
+function WhisperPartFiles(const AParts: TWhisperAudioPartArray): TStringList;
+
+{ The book words of AJoined (WhisperJoinAligned) that have a time - exact,
+  similar, interpolated or moved - with that time moved from the joined
+  time line into the file the word starts in: AFiles must list the files
+  of AParts (WhisperPartFiles). No parts (one file): file 0, times as
+  they are. A word across two files ends with the first; a word with no
+  length gets 10 ms. }
+function WhisperWordFileTimes(const AJoined: TWhisperAlignedWordArray; const AParts: TWhisperAudioPartArray;
+  AFiles: TStrings): TWhisperFileTimeArray;
 
 { A transcription read back from the JSON WhisperConsole --json writes
   (WhisperWordsToJson, with "parts" when the recording had them):
@@ -476,6 +512,74 @@ begin
   while Length(Result) < 4 do
     Result := '0' + Result;
   Insert('.', Result, Length(Result) - 2);
+end;
+
+function WhisperTranscriptionToJson(const AResult: TWhisperTranscription; const AParts: TWhisperAudioPartArray): string;
+var
+  P: Integer;
+begin
+  Result := WhisperWordsToJson(AResult);
+  if Length(AParts) = 0 then
+    Exit;
+  P := LastDelimiter('}', Result);
+  Result := TrimRight(Copy(Result, 1, P - 1)) + ',' + sLineBreak + '  "parts": ' +
+    WhisperAudioPartsToJson(AParts) + sLineBreak + Copy(Result, P, MaxInt);
+end;
+
+function WhisperPartAt(const AParts: TWhisperAudioPartArray; AT: Int64): Integer;
+begin
+  Result := High(AParts);
+  while (Result > 0) and (AT < Round(AParts[Result].Offset * WHISPER_TICKS_PER_SECOND)) do
+    Dec(Result);
+end;
+
+function WhisperPartFiles(const AParts: TWhisperAudioPartArray): TStringList;
+var
+  I: Integer;
+begin
+  Result := TStringList.Create;
+  for I := 0 to High(AParts) do
+    if Result.IndexOf(AParts[I].FileName) < 0 then
+      Result.Add(AParts[I].FileName);
+end;
+
+function WhisperWordFileTimes(const AJoined: TWhisperAlignedWordArray; const AParts: TWhisperAudioPartArray;
+  AFiles: TStrings): TWhisperFileTimeArray;
+var
+  I, P, F, N: Integer;
+  Shift, PartEnd, T0, T1: Int64;
+begin
+  Result := nil;
+  SetLength(Result, Length(AJoined));
+  N := 0;
+  for I := 0 to High(AJoined) do
+  begin
+    if (AJoined[I].T0 < 0) or not (AJoined[I].Match in [wamExact, wamSimilar, wamInterpolated, wamMoved]) then
+      Continue;
+    T0 := AJoined[I].T0;
+    T1 := AJoined[I].T1;
+    F := 0;
+    Shift := 0;
+    PartEnd := High(Int64);
+    if Length(AParts) > 0 then
+    begin
+      // the part the word starts in: its file, and that file's time
+      P := WhisperPartAt(AParts, T0);
+      F := AFiles.IndexOf(AParts[P].FileName);
+      Shift := Round((AParts[P].Start - AParts[P].Offset) * WHISPER_TICKS_PER_SECOND);
+      PartEnd := Round((AParts[P].Offset + AParts[P].Duration) * WHISPER_TICKS_PER_SECOND);
+    end;
+    if T1 > PartEnd then
+      T1 := PartEnd;   // a word across two files ends with the first
+    if T1 <= T0 then
+      T1 := T0 + 1;
+    Result[N].Word := I;
+    Result[N].FileIndex := F;
+    Result[N].StartTime := (T0 + Shift) / WHISPER_TICKS_PER_SECOND;
+    Result[N].EndTime := (T1 + Shift) / WHISPER_TICKS_PER_SECOND;
+    Inc(N);
+  end;
+  SetLength(Result, N);
 end;
 
 function WhisperAudioPartsToJson(const AParts: TWhisperAudioPartArray): string;

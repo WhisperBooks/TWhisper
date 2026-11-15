@@ -288,6 +288,26 @@ const
   EDGE_TOKENS_PER_TOKEN = 3;
   { See EDGE_TOKENS_PER_TOKEN. }
   EDGE_SLACK = 20;
+  { Before the first and after the last anchor a pair is kept only in a
+    run of this many pairs in a row (book and transcript tokens both next
+    to each other), or in a run that reaches the anchor: a spoken title or
+    first sentence pairs word after word, while unread front matter next
+    to a spoken preamble pairs only scattered common words ('a', 'for',
+    'the' of the IDPF Moby-Dick's transcriber's notes with LibriVox's "This
+    is a LibriVox recording ... For more information"). }
+  EDGE_MIN_RUN = 3;
+  { Edge pairs must also chain to the anchor: walking out from it, at most
+    this many book tokens skipped between kept pairs. Past a longer skip
+    the rest of the edge is front or back matter the reader did not read
+    (a Gutenberg licence after "The End" picked "of Moby Dick" out of
+    "end of Moby Dick" in the narrator's sign-off). }
+  EDGE_MAX_SKIP = 2;
+  { Shortest time an interpolated word gets, 10 ms units. A word the
+    recogniser dropped between two heard words that touch ('so much the
+    more', 'the' not heard) had no time at all - a 10 ms clip on top of
+    the next word, which a reader's ClipAt can miss. Such a run now
+    shares the two neighbours' time with them, by length. }
+  MIN_WORD_TICKS = 8;
   { Names of the match kinds. }
   MATCH_NAMES: array[TWhisperAlignMatch] of string = ('none', 'exact', 'similar', 'interpolated',
     'not spoken', 'not heard', 'moved');
@@ -555,8 +575,92 @@ begin
   end;
 end;
 
-{ Appends the tokens of one word to ATokens (numbers as words). }
-procedure AddTokens(const AWord: string; AWordIndex: Integer; var ATokens: TTokens);
+{ The value of AWord as a Roman numeral, 0 when it is not one. Counted
+  only when unmistakable: upper case, in canonical form (VII, XIV, XXVIII -
+  not IIII or VX), 1 .. 3999, punctuation around it ignored; one letter
+  only right after a word in capitals (APrev: 'CHAPTER I.'), so the
+  pronoun I and the letters stay words. Whisper writes a spoken chapter
+  number both ways ("Chapter 5." and "CHAPTER VII." in one book), and
+  books print them both ways too. }
+function RomanValue(const AWord, APrev: string): Integer;
+const
+  { The canonical pieces, largest first. }
+  VALUES: array[0..12] of Integer = (1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1);
+  { Their letters. }
+  NUMERALS: array[0..12] of string = ('M', 'CM', 'D', 'CD', 'C', 'XC', 'L', 'XL', 'X', 'IX', 'V', 'IV', 'I');
+
+  { AText without the characters around it that are not ASCII letters. }
+  function Core(const AText: string): string;
+  var
+    A, B: Integer;
+  begin
+    A := 1;
+    B := Length(AText);
+    while (A <= B) and not CharInSet(AText[A], ['A'..'Z', 'a'..'z']) do
+      Inc(A);
+    while (B >= A) and not CharInSet(AText[B], ['A'..'Z', 'a'..'z']) do
+      Dec(B);
+    Result := Copy(AText, A, B - A + 1);
+  end;
+
+var
+  S, P, Canonical: string;
+  I, K, V, Digit: Integer;
+begin
+  Result := 0;
+  S := Core(AWord);
+  if (S = '') or (Length(S) > 15) then
+    Exit;
+  for I := 1 to Length(S) do
+    if not CharInSet(S[I], ['I', 'V', 'X', 'L', 'C', 'D', 'M']) then
+      Exit;
+  if Length(S) = 1 then
+  begin
+    // one letter: only after a word in capitals ('CHAPTER I.')
+    P := Core(APrev);
+    if Length(P) < 2 then
+      Exit;
+    for I := 1 to Length(P) do
+      if not CharInSet(P[I], ['A'..'Z']) then
+        Exit;
+  end;
+  // the value, read leniently ...
+  V := 0;
+  for I := 1 to Length(S) do
+  begin
+    case S[I] of
+      'I': Digit := 1;
+      'V': Digit := 5;
+      'X': Digit := 10;
+      'L': Digit := 50;
+      'C': Digit := 100;
+      'D': Digit := 500;
+    else
+      Digit := 1000;
+    end;
+    if (I < Length(S)) and (Pos(S[I + 1], 'IVXLCDM') > Pos(S[I], 'IVXLCDM')) then
+      Dec(V, Digit)
+    else
+      Inc(V, Digit);
+  end;
+  if (V < 1) or (V > 3999) then
+    Exit;
+  // ... then accepted only when written the canonical way
+  Canonical := '';
+  K := V;
+  for I := 0 to High(VALUES) do
+    while K >= VALUES[I] do
+    begin
+      Canonical := Canonical + NUMERALS[I];
+      Dec(K, VALUES[I]);
+    end;
+  if Canonical = S then
+    Result := V;
+end;
+
+{ Appends the tokens of one word to ATokens (numbers as words; APrev, the
+  word before, tells a lone Roman I after a capitalised word). }
+procedure AddTokens(const AWord: string; AWordIndex: Integer; var ATokens: TTokens; const APrev: string = '');
 
   procedure Add(const S: UTF8String);
   begin
@@ -581,10 +685,27 @@ var
   Ordinal: Boolean;
   Suffix: UTF8String;
   Value: Int64;
+  Roman: Integer;
 begin
   L := Letters(AWord);
   if L = '' then
     Exit;
+  // a Roman numeral: its number's words ('CHAPTER VII.' = 'chapter seven')
+  Roman := RomanValue(AWord, APrev);
+  if Roman > 0 then
+  begin
+    Words := UTF8String(WhisperNumberWords(Roman)) + ' ';
+    I := 1;
+    while I <= Length(Words) do
+    begin
+      N := I;
+      while Words[I] <> ' ' do
+        Inc(I);
+      Add(Copy(Words, N, I - N));
+      Inc(I);
+    end;
+    Exit;
+  end;
   // digits, optionally an ordinal suffix: a number
   N := 0;
   while (N < Length(L)) and (L[N + 1] >= '0') and (L[N + 1] <= '9') do
@@ -607,6 +728,15 @@ begin
   end
   else
     Add(L);
+end;
+
+{ The word before AWords[AIndex] ('' for the first). }
+function PrevOf(const AWords: TWhisperStringArray; AIndex: Integer): string;
+begin
+  if AIndex > 0 then
+    Result := AWords[AIndex - 1]
+  else
+    Result := '';
 end;
 
 function WhisperNormalizeWord(const AWord: string): string;
@@ -1062,12 +1192,79 @@ begin
     AddPair(APairs, ACount, Tmp[I].B, Tmp[I].T, Tmp[I].Exact);
 end;
 
+{ Pairs of an edge gap (AlignGap's output APairs[AFrom..ACount-1]) that
+  are kept: runs of EDGE_MIN_RUN pairs in a row, or a run reaching the
+  anchor at book token AAnchorB / transcript token AAnchorT (the token
+  just after the gap before the first anchor, or just before the gap
+  after the last). Of those, only the pairs chained to the anchor (no
+  more than EDGE_MAX_SKIP book tokens skipped between neighbours) stay.
+  The others are dropped (ACount shrinks). }
+procedure KeepEdgeRuns(var APairs: TPairArray; AFrom: Integer; var ACount: Integer; AAnchorB, AAnchorT: Integer);
+var
+  I, J, K, N: Integer;
+  Keep: Boolean;
+begin
+  N := AFrom;
+  I := AFrom;
+  while I < ACount do
+  begin
+    // the run from I: book and transcript tokens next to each other (a
+    // two-for-one join repeats one side)
+    J := I;
+    while (J + 1 < ACount) and (APairs[J + 1].B - APairs[J].B in [0, 1]) and
+      (APairs[J + 1].T - APairs[J].T in [0, 1]) do
+      Inc(J);
+    Keep := (J - I + 1 >= EDGE_MIN_RUN) or
+      ((APairs[J].B + 1 = AAnchorB) and (APairs[J].T + 1 = AAnchorT)) or
+      ((APairs[I].B - 1 = AAnchorB) and (APairs[I].T - 1 = AAnchorT));
+    if Keep then
+      for K := I to J do
+      begin
+        APairs[N] := APairs[K];
+        Inc(N);
+      end;
+    I := J + 1;
+  end;
+  ACount := N;
+  // chain to the anchor, walking outward from it
+  if (ACount > AFrom) and (APairs[AFrom].B > AAnchorB) then
+  begin
+    // after the last anchor: forwards
+    K := AAnchorB;
+    N := AFrom;
+    while (N < ACount) and (APairs[N].B - K <= EDGE_MAX_SKIP + 1) do
+    begin
+      K := APairs[N].B;
+      Inc(N);
+    end;
+    ACount := N;
+  end
+  else if ACount > AFrom then
+  begin
+    // before the first anchor: backwards, then the kept tail moved down
+    K := AAnchorB;
+    N := ACount - 1;
+    while (N >= AFrom) and (K - APairs[N].B <= EDGE_MAX_SKIP + 1) do
+    begin
+      K := APairs[N].B;
+      Dec(N);
+    end;
+    J := AFrom;
+    for I := N + 1 to ACount - 1 do
+    begin
+      APairs[J] := APairs[I];
+      Inc(J);
+    end;
+    ACount := J;
+  end;
+end;
+
 { The token pairs of one alignment pass: anchors, and the gaps before,
   between and after them. }
 function PairTokens(const AB, AT: TTokens; out AAnchorCount: Integer): TPairArray;
 var
   Anchors: TPairArray;
-  N, I, PB, PT, Edge: Integer;
+  N, I, PB, PT, Edge, Before: Integer;
 begin
   Anchors := FindAnchors(AB, AT, AAnchorCount);
   Result := nil;
@@ -1082,7 +1279,9 @@ begin
       Edge := Anchors[0].B - (Anchors[0].T * EDGE_TOKENS_PER_TOKEN + EDGE_SLACK);
       if Edge < 0 then
         Edge := 0;
+      Before := N;
       AlignGap(AB, AT, Edge, Anchors[0].B - 1, 0, Anchors[0].T - 1, True, Result, N);
+      KeepEdgeRuns(Result, Before, N, Anchors[0].B, Anchors[0].T);
     end
     else if I < Length(Anchors) then
       AlignGap(AB, AT, PB + 1, Anchors[I].B - 1, PT + 1, Anchors[I].T - 1, False, Result, N)
@@ -1092,7 +1291,9 @@ begin
       Edge := PB + (AT.Count - 1 - PT) * EDGE_TOKENS_PER_TOKEN + EDGE_SLACK;
       if Edge > AB.Count - 1 then
         Edge := AB.Count - 1;
+      Before := N;
       AlignGap(AB, AT, PB + 1, Edge, PT + 1, AT.Count - 1, False, Result, N);
+      KeepEdgeRuns(Result, Before, N, PB, PT);
     end
     else
       AlignGap(AB, AT, 0, AB.Count - 1, 0, AT.Count - 1, False, Result, N);
@@ -1110,6 +1311,48 @@ end;
 function WordWeight(const AWord: string): Integer;
 begin
   Result := Length(Letters(AWord)) + 1;
+end;
+
+{ Words of AAligned with less than MIN_WORD_TICKS of time get some (DTW
+  gives a short word such as 'see' no length, at the start of the next
+  word: a 10 ms clip on top of it). The time comes first from silence
+  before the word, then from the next word when that is long enough;
+  words are only touched where their times run in book order. }
+procedure GiveShortWordsRoom(var AAligned: TWhisperAlignedWordArray);
+var
+  I, Need: Integer;
+  Prev: Int64;
+begin
+  for I := 0 to High(AAligned) do
+  begin
+    if (AAligned[I].T0 < 0) or (AAligned[I].T1 - AAligned[I].T0 >= MIN_WORD_TICKS) then
+      Continue;
+    // not past the next word's start
+    if (I < High(AAligned)) and (AAligned[I + 1].T0 >= AAligned[I].T0) and
+      (AAligned[I].T1 > AAligned[I + 1].T0) then
+      AAligned[I].T1 := AAligned[I + 1].T0;
+    // silence before it
+    if (I > 0) and (AAligned[I - 1].T1 >= 0) and (AAligned[I - 1].T1 <= AAligned[I].T0) then
+      Prev := AAligned[I - 1].T1
+    else
+      Prev := AAligned[I].T0;
+    Need := MIN_WORD_TICKS - (AAligned[I].T1 - AAligned[I].T0);
+    if Need > 0 then
+    begin
+      if AAligned[I].T0 - Need > Prev then
+        AAligned[I].T0 := AAligned[I].T0 - Need
+      else
+        AAligned[I].T0 := Prev;
+    end;
+    // then the next word, when it can spare it
+    Need := MIN_WORD_TICKS - (AAligned[I].T1 - AAligned[I].T0);
+    if (Need > 0) and (I < High(AAligned)) and (AAligned[I + 1].T0 = AAligned[I].T1) and
+      (AAligned[I + 1].T1 - AAligned[I + 1].T0 >= MIN_WORD_TICKS + Need) then
+    begin
+      Inc(AAligned[I].T1, Need);
+      Inc(AAligned[I + 1].T0, Need);
+    end;
+  end;
 end;
 
 { One alignment pass over the book words not in AExcluded: fills AResult
@@ -1142,7 +1385,7 @@ begin
   BT.SilenceAfter := nil;
   for I := 0 to High(ABookWords) do
     if not AExcluded[I] then
-      AddTokens(ABookWords[I], I, BT);
+      AddTokens(ABookWords[I], I, BT, PrevOf(ABookWords, I));
   Pairs := PairTokens(BT, ATrans, AStats.Anchors);
   // book token / heard token pairs, for learning the recogniser's habits
   if ACounts <> nil then
@@ -1277,7 +1520,33 @@ begin
           Timed := True;
       end;
     end;
-    if Timed then
+    if Timed and not Unheard and (Span < (Right - Left - 1) * MIN_WORD_TICKS) and
+      (AResult[Right].T1 - AResult[Left].T0 >= (Right - Left + 1) * MIN_WORD_TICKS) then
+    begin
+      // no room between the heard words: the dropped words were said
+      // inside their time - share it out, neighbours included, by length
+      Total := 0;
+      for K := Left to Right do
+        Total := Total + WordWeight(ABookWords[K]);
+      Span := AResult[Right].T1 - AResult[Left].T0;
+      Acc := AResult[Left].T0;
+      for K := Left to Right do
+      begin
+        if K > Left then
+          AResult[K].T0 := Round(Acc);
+        Acc := Acc + Span * WordWeight(ABookWords[K]) / Total;
+        if K < Right then
+          AResult[K].T1 := Round(Acc);
+        if (K > Left) and (K < Right) then
+        begin
+          if Letters(ABookWords[K]) = '' then
+            AResult[K].Match := wamNone
+          else
+            AResult[K].Match := wamInterpolated;
+        end;
+      end;
+    end
+    else if Timed then
     begin
       Total := 0;
       for K := Left + 1 to Right - 1 do
@@ -1301,6 +1570,7 @@ begin
         AResult[K].Match := wamNotSpoken;
     I := Right;
   end;
+  GiveShortWordsRoom(AResult);
   for I := 0 to High(AResult) do
     if AExcluded[I] then
     begin
@@ -1407,7 +1677,7 @@ begin
   Toks.Count := 0;
   Toks.SilenceAfter := nil;
   for I := 0 to High(ABookWords) do
-    AddTokens(ABookWords[I], I, Toks);
+    AddTokens(ABookWords[I], I, Toks, PrevOf(ABookWords, I));
   BookSet := TStringList.Create;
   Paired := TStringList.Create;
   Other := TStringList.Create;
@@ -1504,7 +1774,7 @@ begin
   BT.Count := 0;
   BT.SilenceAfter := nil;
   for I := 0 to High(ABookWords) do
-    AddTokens(ABookWords[I], I, BT);
+    AddTokens(ABookWords[I], I, BT, PrevOf(ABookWords, I));
   First := nil;
   SetLength(First, Length(ABookWords) + 1);
   for I := 0 to High(First) do
@@ -1750,7 +2020,10 @@ begin
   Trans.Count := 0;
   Trans.SilenceAfter := nil;
   for I := 0 to High(AWords) do
-    AddTokens(AWords[I].Text, I, Trans);
+    if I > 0 then
+      AddTokens(AWords[I].Text, I, Trans, AWords[I - 1].Text)
+    else
+      AddTokens(AWords[I].Text, I, Trans);
   SetLength(Trans.SilenceAfter, Trans.Count);
   for I := 0 to Trans.Count - 1 do
   begin

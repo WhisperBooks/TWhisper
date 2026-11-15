@@ -139,7 +139,16 @@ Benchmark options: `--seconds N|all` (audio per timed run, default 30),
 `--devices A,B` (only those devices), `--runs N` (median of N timed runs),
 `--threads N` (CPU threads; the benchmark gives the CPU device every logical
 processor by default - whisper.cpp's own default of at most 4 makes a modern
-CPU look several times slower than it is).
+CPU look several times slower than it is), `--bench-start S` (time from S
+seconds).
+
+Which 30 s are timed: by default a stretch that is speech all through,
+never within 30 s of the start or the end. Whisper skips a LibriVox
+recording's spoken intro (about 26 s), so timing the first 30 s measures
+mostly silence and flatters every device; a fixed point such as the
+middle can land in a gap between sections. Each result line says where it
+timed and how much of that stretch had sound. `--seconds all` (the whole
+file) is the real benchmark; 30 s gives a good idea of the speed.
 
 Exit code 0 = success. `--check` must print "Layout check passed"; a layout
 failure means the libraries were built from a different whisper.h than the

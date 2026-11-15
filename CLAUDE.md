@@ -161,7 +161,7 @@ speed never picks the model on its own (accuracy).
   even after a push. A corrected zip gets the NEXT number, never the old
   name; say which number it replaces. Every delivery says what it goes on
   top of: a zip number, or a commit when nothing is pending. Last number
-  used: 21. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
+  used: 28. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
   number in every zip that changes lib/ or the console (its first log
   line says which build made a log - owner was losing track, 20:26).
 - When the owner says a push is done: clone or fetch into a SEPARATE scratch
@@ -223,6 +223,125 @@ into the silence before it - in the real recording the Extracts are read
 (Part 1 = "Chapter 000: Etymology and Extracts"); watch for it where a
 recording lacks text the book has just before a chapter.
 NOT RUN: Delphi build, a real transcription (owner).
+
+### First real book (zip 22, on top of 88975d9 = zip 21 pushed)
+Owner's run (Delphi, Windows, 2026-11-15): Moby-Dick, LibriVox, read by
+Stewart Wills, 5 m4b (24 h 38 m, 44 parts), 1092675 ms (~81x real time),
+215214 words with DTW; --align-words with the IDPF moby-dick-mo.epub
+word list (212881 words; Delphi's list byte-identical to FPC's).
+Zip 21 gave 209636 exact (98.0 %), 2394 similar, 1418 interpolated, 217
+not spoken, 2 not heard, 124 moved, 46 habits. --from-json here (FPC)
+reproduced those figures exactly, in 11 s. Found and fixed (zip 22, all
+in Whisper.Align):
+1. EDGE PAIRS: the IDPF Transcriber's Notes (EPUB words 89-110, not in
+   the recording) were paired word by word with the LibriVox preamble
+   ("a", "for", "the", "This" scattered over a minute). Edge gaps
+   (before the first anchor, after the last) now keep only runs of
+   EDGE_MIN_RUN (3) pairs, or a run touching the anchor (KeepEdgeRuns),
+   and of those only pairs chained to the anchor with at most
+   EDGE_MAX_SKIP (2) book tokens skipped between neighbours. The chain
+   rule fixed the end: the Gutenberg licence after "The End" took "of
+   Moby Dick" from the narrator's "end of Moby Dick". Now EPUB words
+   1-110 and 212127-212214 are not spoken - right for this recording.
+2. ROMAN NUMERALS: Whisper wrote chapter numbers both ways in one run
+   ("Chapter 5." and "CHAPTER VII."), so "CHAPTER I." was not matched and
+   Chapter 1's heading got the preamble's times. RomanValue: canonical,
+   upper-case numerals 1-3999 become their number's words on both sides
+   (a lone letter only after a word in capitals, so the pronoun I stays
+   a word); AddTokens takes the previous word.
+After both: 209652 exact, 2382 similar, 1386 interpolated, 244 not
+spoken, 3 not heard, 124 moved; 211964 timed words.
+AGAINST THE HUMAN SYNC (IDPF moby-dick-mo.epub = the same Wills reading
+of chapters 1-2, 40 sentence clips): offset 1753.73 s into Part 1; clip
+starts median 0.000 s, mean |error| 0.21 s, 15 within 0.1 s, 26 within
+0.25 s, 37 within 0.5 s, worst 0.75 s (the human times are mostly
+rounded to 0.25-0.5 s, e.g. 182.00, 225.50 - so this is near their
+precision). Clip ends: TWhisper ends at the last word's end, the human
+clips run into the pause - median 0.82 s of silence after the last word.
+Not an error; worth knowing if highlight tails look short.
+
+### Benchmark stretch and short words (zip 26, on top of 25 = notes, 23 = code)
+1. BENCHMARK STRETCH (owner, 2026-11-15): Whisper skips a LibriVox
+   recording's spoken intro (~26 s on Aladdin), so timing the FIRST 30 s
+   measured mostly skipped audio and flattered every device - and the
+   benchmark picks the device. Owner: the middle is no good either ("a
+   section with lots of silence or the end of a section - gap - start of
+   next section"), and "make sure it doesn't pick anywhere 30s from start
+   or end". WhisperFindSpeech (Whisper.Core): RMS per 100 ms frame, quiet
+   = below a tenth of the 90th percentile; search from 30 s to 30 s before
+   the end; the first 30 s window at most 25 % quiet (ordinary reading
+   measured at 10 - 20 % quiet, median 17 %, on the Wills Moby-Dick
+   ch 1-2 audio; a section gap far more), else the least quiet window;
+   too short for both edges: the middle; shorter than the stretch: the
+   start. TWhisperBenchmark.StartSeconds (-1 = choose; read back after
+   Run) and SpeechShare; TWhisperBenchmarkResult.StartSeconds /
+   SpeechShare; the warm-up uses the same start. WhisperConsole
+   --bench-start S; each result line prints "from H:MM:SS, NN % sound".
+   --seconds all unchanged (whole audio). The console still benchmarks
+   part 1 only of a multi-part input (as before).
+   TESTED (no model here - the chooser only, FPC): the ch 1-2 audio
+   (860 s): start 30.0 s, 83 % sound (first 30 s: 54 %); 40 s of silence
+   in front: 64.5 s (the reading's start), 75 %; 70 s file: the middle.
+   NOT RUN: a real benchmark (owner, any GPU).
+2. SHORT WORDS: 375 words of the Moby timings had a 10 ms time on top of
+   the next word - (a) a word Whisper dropped between two heard words
+   that touch ('so much the more': 'the' interpolated into 0 ms), (b) DTW
+   giving a heard short word ('see') no length at the next word's start.
+   Whisper.Align: (a) such a run shares the two neighbours' time with
+   them, by length (MIN_WORD_TICKS = 8, 80 ms); (b) GiveShortWordsRoom
+   after interpolation: a word under 80 ms takes time from silence
+   before it, then from the next word if that can spare it; only where
+   times run in book order. Moby-Dick (owner's moby.json, EpubUnum-15
+   word list): overlapping clips 375 -> 2 (both "moved" words, out of
+   order on purpose), words under 75 ms 433 -> 4 (no room either side),
+   1521 words' times changed, aligner figures unchanged.
+   EpubConsole --overlay of the result (stand-in audio) + checkover:
+   every clip = its timing, ClipAt from each clip's middle finds it -
+   problems 18 -> 0.
+   OWNER'S RUN (2026-11-15, 5090 laptop, large-v3-turbo, Aladdin, --runs
+   3): chosen stretch from 0:04:50.4 (75 % sound - this reader pauses
+   more than Wills; the first 4.5 min were all just over 25 % quiet):
+   CUDA0 122.0x, Vulkan0 128.8x. --bench-start 0 (the old way): CUDA0
+   148.5x, Vulkan0 155.4x, text from "Aladdin and the Magic Lamp by
+   Unknown" (the intro skipped). The old 30 s figures were ~20 % high
+   (session 3's 156x / 146x the same); whole-file runs ~1 % (116.4x ->
+   115.0x counted on the audio transcribed). Ranking unchanged here.
+   HIP: re-run on the Steam Machine later, with a Linux TWhisper build,
+   --bench (chosen stretch, greedy) - like for like with the 5090.
+
+### Word edges trimmed of silence (zip 28, on top of 27)
+Owner (Aladdin, then Night Watch - a professional reader): "The speaker
+would get to the end of a sentence and pause. The start of the next
+sentence would already be highlighted." MEASURED on the owner's
+Moby-Dick transcript: the first word after a full stop lasts 0.120 s per
+letter against 0.060 for others (short words 0.56 s vs 0.20 s) - DTW
+starts it in the pause; on the Wills ch 1-2 audio those words began with
+0.48 s of silence (median; 101 of 107 over 0.15 s). Sometimes the whole
+word sits in the pause ("It" 44.53-45.13, said from 45.13). FIX:
+WhisperTrimWordSilence (Whisper.Core): 10 ms frame levels; quiet = below
+8 % of the 90th percentile; a word edge with 50 ms+ of quiet moves to 20
+ms before the first / after the last loud frame, keeping 80 ms; quiet to
+its end -> its last 80 ms only. Never moves outwards. Called per part
+after FillGaps in WhisperConsole (when words are made) and EpubBuilder.
+TESTED on ch 1-2 (the transcript's words + the audio): sentence-first
+words' leading silence 0.48 -> 0.03 s median, over 0.15 s: 101 -> 1 of
+107; all words with 0.15 s+ leading silence 142 -> 2 of 1873; starts
+moved: ~7 % of words (those after pauses). --from-json has no audio:
+transcripts made before this are not trimmed (EpubBuilder trims a saved
+one once from the audio). CONSOLE_DELIVERY 28.
+
+### Shared helpers for EpubBuilder (zip 27, on top of 26)
+EpubUnum's GUI builder (EpubUnum zip 23) links the library and needs
+what WhisperConsole did in its own code. Moved into Whisper.AudioSet
+(interface now uses Whisper.Align): WhisperPartAt and WhisperPartFiles
+(were the console's PartAt / PartFiles), WhisperTranscriptionToJson (was
+JsonWithParts), and WhisperWordFileTimes + TWhisperFileTime(Array): the
+timed book words moved into the file each starts in (WriteTimings' loop).
+The console uses them; --timings output byte-identical on Moby-Dick
+(213544 lines, cmp). CONSOLE_DELIVERY 27.
+Zip 23 (replaces 22, same content plus): WhisperConsole's FF, AudioIn and
+AudioFiles set to nil before the outer try, next to ExtraModels (Delphi
+W1036 "might not have been initialized" on the finally's Free calls).
 
 ### Review fixes (zip 20, on top of 9bb9d2a "Claude push")
 From a code review by reading (owner, 2026-11-15: "code review", then "y" to
@@ -743,6 +862,41 @@ Commands in READMEs: PowerShell needs the .\ prefix (.\WhisperConsole ...).
 The owner said "no more backends yet".
 
 ## Plans (agreed, not started)
+
+### Benchmark stretch - DONE in zip 26 (moved to the zip 26 notes below)
+
+### Volunteer transcribers (owner's idea, 2026-11-15 - design only)
+LibriVox readers have no GPU; the owner's Mac (and anyone's idle machine
+with a decent GPU) could transcribe for them. Shape discussed:
+- A server keeps a job list; WORKERS POLL it (no inbound ports, works
+  behind any router), take a job with a lease, post the result back; a
+  lapsed lease puts the job back on the list.
+- A job is usually a LINK, not an upload: LibriVox's own files on
+  archive.org + the text edition (LibriVox readers mostly read a known
+  Gutenberg edition). One job per LibriVox SECTION file (a chapter or
+  two) - minutes of GPU time, spread over many machines.
+- The worker returns the transcript JSON only (--json); the server
+  aligns (seconds - Moby-Dick re-aligned in 11 s) and keeps the texts
+  and edition checks in one place.
+- Results check themselves: a right recording of the right text aligns
+  ~98 % exact (Moby-Dick); a low figure = wrong file / bad worker /
+  garbage -> redo elsewhere; spot re-runs on a second machine.
+- Workers report what they can do when they ask: GPU memory, models
+  they can run, backend and speed from their OWN TWhisperBenchmark run
+  (never a fixed rule - Vulkan beat CUDA on the 5090 laptop, HIP beat
+  Vulkan on the Steam Machine: HIP.md). Results record the model, so a
+  turbo transcript can be redone with large-v3 later.
+- Memory: large-v3 ~3 GB, large-v3-turbo ~1.6 GB plus working space -
+  6 GB+ is comfortable (owner: "any OK GPU would be OK at transcription
+  as long as it had 6Gb+").
+- Candidate workers: the owner's Mac (Metal; no audio output needed, so
+  macOS works headless now), the Steam Machine (HIP, ~28x on Aladdin with
+  beam search - HIP.md), the Deck (Vulkan only), gaming PCs.
+- Worker = WhisperConsole --json + a fetch / transcribe / upload loop.
+- Pairs with EpubUnum's plans: timings published beside the original
+  EPUB, pointing at LibriVox's downloads (see Epubunum CLAUDE.md, "Shall
+  we do this"); LibriVox recordings and Gutenberg texts are public
+  domain - a conversation with LibriVox is about working together.
 
 ### CUDA 12.9 + 13 fallback
 Build CUDA twice, 12.9 AND 13.latest, and fall back to 12.9 where 13

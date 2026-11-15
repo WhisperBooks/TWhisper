@@ -600,6 +600,12 @@ type
     Threads: Integer;
     { Audio of the timed run, seconds. }
     AudioSeconds: Double;
+    { Where the timed stretch starts in the benchmark's audio, seconds
+      (@code(TWhisperBenchmark.StartSeconds)). }
+    StartSeconds: Double;
+    { Share of the timed stretch that has sound (0 .. 1, 100 ms frames):
+      a low figure means the speed was measured partly on silence. }
+    SpeechShare: Double;
     { Audio seconds per wall-clock second of the timed run (higher is faster). }
     Speed: Double;
     { Text of the timed run (to see that the device computes correctly). }

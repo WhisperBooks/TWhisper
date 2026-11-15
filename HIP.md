@@ -159,6 +159,13 @@ CLI's DEFAULTS: beam search 5 / best of 5, 4 threads.
 | HIP (ROCm0) | 74.9 s | 28.1x | 25.2 s (89 x 283 ms) | 30.9 s | 13.8 s |
 | Vulkan0 (RADV) | 92.8 s | 22.7x | 42.3 s (97 x 436 ms) | 30.7 s | 13.8 s |
 
+- The intro: Whisper skips a LibriVox recording's spoken intro (owner,
+  2026-11-15: about 26 s on Aladdin), so these totals include ~26 s that
+  was not transcribed - about 1 % of 2106.6 s, the same for both
+  backends. A fair full-run figure needs Aladdin cut to start at 26 s.
+  A 30 s benchmark of the file's START measures mostly that intro and is
+  worthless here - fixed in zip 26: the benchmark now chooses a stretch
+  of speech away from both ends (CLAUDE.md, zip 26 notes).
 - HIP wins on this GPU, entirely in encoding (1.5x faster); decoding and
   sampling are the same. This is the OPPOSITE of the owner's RTX 5090
   laptop, where Vulkan beat CUDA - the reason the benchmark decides per
@@ -191,6 +198,12 @@ for a fair figure:
 build exists.
 
 ## Open questions / next steps
+
+0. Re-run on the Steam Machine with a Linux TWhisper build and
+   `WhisperConsole --bench` (zip 26: a chosen stretch of speech, greedy)
+   so the figures compare like for like with the 5090 laptop's (owner,
+   2026-11-15). The 5090's own 30 s figures with the chosen stretch:
+   CUDA0 122.0x, Vulkan0 128.8x (the first 30 s gave 148.5x / 155.4x).
 
 1. Greedy, 12-thread rerun on the Steam Machine (HIP and Vulkan).
 2. gfx11-generic build: does one binary run on gfx1102 AND gfx1103 (Z1)?

@@ -18,6 +18,10 @@
                                       (time every model on every device, report the fastest)
   --device / --devices take names from the device list ('CPU', 'CUDA0', 'Vulkan0', ...).
   --seconds: audio per timed run (default 30; 0 or all = the whole file).
+  --bench-start S: time from S seconds. Default: a stretch chosen to be
+           speech all through, never within 30 s of either end (Whisper
+           skips a LibriVox intro; the middle may be a gap); each result
+           prints where it timed and how much of it had sound.
   --threads: CPU threads (benchmark CPU device default: every logical processor;
              transcription default: whisper.cpp's, at most 4).
   --runs: timed runs per model and device; the median counts.
@@ -134,31 +138,11 @@ const
   { The delivery this console comes from (zip number): printed first, so a
     log shows which build made it. Bumped with every zip that changes the
     library or the console. }
-  CONSOLE_DELIVERY = 21;
+  CONSOLE_DELIVERY = 28;
   { Learned habits listed by --align. }
   ALIGN_LEARNED_SHOWN = 20;
   { Marks an interpolated book word in the --align-labels file. }
   INTERPOLATED_MARK = ' ?';
-
-{ The part of AParts word time AT (10 ms units, on the joined time line)
-  is in: the last part starting at or before it (0 when none). }
-function PartAt(const AParts: TWhisperAudioPartArray; AT: Int64): Integer;
-begin
-  Result := High(AParts);
-  while (Result > 0) and (AT < Round(AParts[Result].Offset * WHISPER_TICKS_PER_SECOND)) do
-    Dec(Result);
-end;
-
-{ The audio files of AParts in order of first appearance. }
-function PartFiles(const AParts: TWhisperAudioPartArray): TStringList;
-var
-  I: Integer;
-begin
-  Result := TStringList.Create;
-  for I := 0 to High(AParts) do
-    if Result.IndexOf(AParts[I].FileName) < 0 then
-      Result.Add(AParts[I].FileName);
-end;
 
 { Reads an EPUB's word list (EpubConsole --words: number, document, role,
   text - tab separated): AWords the texts, ANumbers their numbers. Words of
@@ -209,15 +193,14 @@ procedure WriteTimings(const AFileName: string; const AWords: TWhisperStringArra
   const AParts: TWhisperAudioPartArray; const ASingleFile: string);
 var
   Out, Files: TStringList;
-  I, P, F, Written: Integer;
-  Shift, PartEnd: Int64;
+  I, F: Integer;
   FS: TFormatSettings;
-  T0, T1: Int64;
+  Times: TWhisperFileTimeArray;
 begin
   FS := FormatSettings;
   FS.DecimalSeparator := '.';
   Out := TStringList.Create;
-  Files := PartFiles(AParts);
+  Files := WhisperPartFiles(AParts);
   try
     if Files.Count = 0 then
       Files.Add(ExpandFileName(ASingleFile));
@@ -225,34 +208,13 @@ begin
     Out.Add('# for: EpubConsole <book.epub> --overlay THIS-FILE OUT.epub');
     for F := 0 to Files.Count - 1 do
       Out.Add(Format('# audio %d: %s', [F + 1, Files[F]]));
-    Written := 0;
-    for I := 0 to High(AWords) do
-    begin
-      if (AJoined[I].T0 < 0) or not (AJoined[I].Match in [wamExact, wamSimilar, wamInterpolated, wamMoved]) then
-        Continue;
-      T0 := AJoined[I].T0;
-      T1 := AJoined[I].T1;
-      F := 0;
-      Shift := 0;
-      PartEnd := High(Int64);
-      if Length(AParts) > 0 then
-      begin
-        // the part the word starts in: its file, and that file's time
-        P := PartAt(AParts, T0);
-        F := Files.IndexOf(AParts[P].FileName);
-        Shift := Round((AParts[P].Start - AParts[P].Offset) * WHISPER_TICKS_PER_SECOND);
-        PartEnd := Round((AParts[P].Offset + AParts[P].Duration) * WHISPER_TICKS_PER_SECOND);
-      end;
-      if T1 > PartEnd then
-        T1 := PartEnd;   // a word across two files ends with the first
-      if T1 <= T0 then
-        T1 := T0 + 1;
-      Out.Add(Format('%d %.3f %.3f %d', [ANumbers[I], (T0 + Shift) / WHISPER_TICKS_PER_SECOND,
-        (T1 + Shift) / WHISPER_TICKS_PER_SECOND, F + 1], FS));
-      Inc(Written);
-    end;
+    // each word in the file it starts in (the shared library routine)
+    Times := WhisperWordFileTimes(AJoined, AParts, Files);
+    for I := 0 to High(Times) do
+      Out.Add(Format('%d %.3f %.3f %d', [ANumbers[Times[I].Word], Times[I].StartTime, Times[I].EndTime,
+        Times[I].FileIndex + 1], FS));
     WhisperSaveTextFile(AFileName, Out.Text);
-    WriteLn(Format('%d timed EPUB word(s) of %d written to %s (%d audio file(s))', [Written, Length(AWords),
+    WriteLn(Format('%d timed EPUB word(s) of %d written to %s (%d audio file(s))', [Length(Times), Length(AWords),
       AFileName, Files.Count]));
   finally
     Files.Free;
@@ -425,18 +387,6 @@ begin
     [Length(Gaps), Again, Added]));
 end;
 
-{ AJson (WhisperWordsToJson) with the parts of the recording added as
-  "parts" (file, title, start and end in the file, offset on the joined
-  time line of the words). }
-function JsonWithParts(const AJson: string; const AParts: TWhisperAudioPartArray): string;
-var
-  P: Integer;
-begin
-  P := LastDelimiter('}', AJson);
-  Result := TrimRight(Copy(AJson, 1, P - 1)) + ',' + sLineBreak + '  "parts": ' +
-    WhisperAudioPartsToJson(AParts) + sLineBreak + Copy(AJson, P, MaxInt);
-end;
-
 { Writes an Audacity label track per audio file of AParts (ABase-01.txt,
   ...), the words' times moved from the joined time line to that file's. }
 procedure WriteFileLabels(const ABase: string; const AParts: TWhisperAudioPartArray; const AWords: TWhisperWordArray);
@@ -447,7 +397,7 @@ var
   Name: string;
   Files: TStringList;
 begin
-  Files := PartFiles(AParts);
+  Files := WhisperPartFiles(AParts);
   try
     for F := 0 to Files.Count - 1 do
     begin
@@ -456,7 +406,7 @@ begin
       for I := 0 to High(AWords) do
       begin
         // the part the word starts in
-        P := PartAt(AParts, AWords[I].T0);
+        P := WhisperPartAt(AParts, AWords[I].T0);
         if AParts[P].FileName <> Files[F] then
           Continue;
         Shift := Round((AParts[P].Start - AParts[P].Offset) * WHISPER_TICKS_PER_SECOND);
@@ -529,7 +479,9 @@ begin
     WriteLn(Format('  %s on %s: %.2fx real time (load %d ms, warm-up %d ms, %.1f s of audio in %d ms%s, %d threads)',
       [ExtractFileName(AResult.ModelFile), AResult.Device.Name, AResult.Speed, AResult.LoadMs, AResult.WarmupMs,
        AResult.AudioSeconds, AResult.RunMs, IfThen(AResult.Runs > 1, Format(' - median of %d runs', [AResult.Runs]), ''),
-       AResult.Threads]), sLineBreak, '    "', Copy(AResult.Text, 1, 100), '"')
+       AResult.Threads]), sLineBreak,
+      Format('    from %s, %.0f %% sound: "', [WhisperTimeToStr(Round(AResult.StartSeconds * 100)),
+       AResult.SpeechShare * 100]), Copy(AResult.Text, 1, 100), '"')
   else
     WriteLn(Format('  %s on %s FAILED: %s', [ExtractFileName(AResult.ModelFile), AResult.Device.Name,
       AResult.ErrorMessage]));
@@ -553,7 +505,7 @@ var
   JsonParts: TWhisperAudioPartArray;
   CheckOnly, Translate, Tokens, LayoutOk, Bench, WantWords, NoDtw, NoFlash, NoContext: Boolean;
   CarryPrompt: Boolean;
-  BenchSeconds: Double;
+  BenchSeconds, BenchStart: Double;
   BenchDevices, Threads, Runs: Integer;
   DeviceList: string;
   Picked: TWhisperDeviceArray;
@@ -577,6 +529,9 @@ begin
   ExitCode := 1;
   WriteLn(Format('WhisperConsole, TWhisper delivery %d', [CONSOLE_DELIVERY]));
   ExtraModels := nil;
+  FF := nil;
+  AudioIn := nil;
+  AudioFiles := nil;
   Handler := TConsoleHandler.Create;
   try
     try
@@ -598,6 +553,7 @@ begin
       JsonFile := '';
       Bench := False;
       BenchSeconds := WHISPER_CHUNK_SIZE;
+      BenchStart := -1;
       DeviceName := '';
       DeviceList := '';
       Threads := 0;
@@ -606,9 +562,6 @@ begin
       FFmpegFolder := '';
       ByChapter := False;
       FillGaps := True;
-      FF := nil;
-      AudioIn := nil;
-      AudioFiles := nil;
       ModelFile := '';
       AudioFile := '';
       Lang := WHISPER_LANGUAGE_AUTO;
@@ -639,6 +592,11 @@ begin
             BenchSeconds := 0
           else
             BenchSeconds := StrToFloat(ParamStr(I));
+          Inc(I);
+        end
+        else if (Arg = '--bench-start') and (I <= ParamCount) then
+        begin
+          BenchStart := StrToFloat(ParamStr(I));
           Inc(I);
         end
         else if (Arg = '--devices') and (I <= ParamCount) then
@@ -845,6 +803,7 @@ begin
           Benchmark.Params := Params;
           Benchmark.ModelFiles.AddStrings(ExtraModels);
           Benchmark.MaxSeconds := BenchSeconds;
+          Benchmark.StartSeconds := BenchStart;
           Benchmark.CpuThreads := Threads;
           Benchmark.Runs := Runs;
           // --devices: only the named ones, in the order given
@@ -869,7 +828,8 @@ begin
           end;
           WriteLn(Format('Audio %s: %.1f s; timing %s per model and device', [AudioFile,
             WhisperSamplesSeconds(Samples), IfThen(BenchSeconds <= 0, 'all of it',
-            Format('the first %.0f s', [BenchSeconds]))]));
+            IfThen(BenchStart < 0, Format('%.0f s of speech (chosen: not within 30 s of either end)', [BenchSeconds]),
+            Format('%.0f s from %.1f s', [BenchSeconds, BenchStart])))]));
           Benchmark.OnStart := Handler.BenchDevice;
           Benchmark.OnResult := Handler.BenchResult;
           BenchResults := Benchmark.Run(Picked);
@@ -967,6 +927,9 @@ begin
               Part := Run.Execute(Samples);
               if FillGaps and (Part.ResultCode = 0) and not Part.Cancelled then
                 FillAndReport(Run, Samples, Part, AudioIn.Parts[I].Offset, Prompt);
+              // the pause before a word is not the word (DTW starts it early)
+              if WantWords then
+                WriteLn(Format('Word edges trimmed of silence: %d', [WhisperTrimWordSilence(Part, Samples)]));
               WhisperAppendTranscription(R, Part, AudioIn.Parts[I].Offset);
               // Keep the language the first chapter was heard in.
               if SameText(Params.Language, WHISPER_LANGUAGE_AUTO) and (Part.LanguageCode <> '') then
@@ -981,6 +944,8 @@ begin
             R := Run.Execute(Samples);
             if FillGaps and (R.ResultCode = 0) and not R.Cancelled then
               FillAndReport(Run, Samples, R, 0, Prompt);
+            if WantWords then
+              WriteLn(Format('Word edges trimmed of silence: %d', [WhisperTrimWordSilence(R, Samples)]));
           end;
           WriteLn(Format('Result %d (%s): %d segment(s), language %s (%s), %.2f s of audio in %d ms',
             [R.ResultCode, WhisperResultText(R.ResultCode), Length(R.Segments), R.LanguageCode,
@@ -1006,7 +971,7 @@ begin
             if JsonFile <> '' then
             begin
               if AudioIn <> nil then
-                WhisperSaveTextFile(JsonFile, JsonWithParts(WhisperWordsToJson(R), AudioIn.Parts))
+                WhisperSaveTextFile(JsonFile, WhisperTranscriptionToJson(R, AudioIn.Parts))
               else
                 WhisperSaveTextFile(JsonFile, WhisperWordsToJson(R));
               WriteLn('JSON written to ', JsonFile);
