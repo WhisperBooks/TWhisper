@@ -116,7 +116,19 @@ function WhisperNaturalCompare(const A, B: string): Integer;
   length (seconds). }
 function WhisperAudioPartsToJson(const AParts: TWhisperAudioPartArray): string;
 
+{ A transcription read back from the JSON WhisperConsole --json writes
+  (WhisperWordsToJson, with "parts" when the recording had them):
+  segments, words (in time order), language, word timing, audio length.
+  AParts gets the parts (empty when the JSON has none). Lets a long
+  transcription be aligned again - another book text, a newer aligner -
+  without transcribing it again.
+  @raises(EWhisperError when AJson is not such a JSON.) }
+function WhisperTranscriptionFromJson(const AJson: string; out AParts: TWhisperAudioPartArray): TWhisperTranscription;
+
 implementation
+
+uses
+  Whisper.Words;
 
 const
   { Extensions read as audio in a folder. }
@@ -481,6 +493,453 @@ begin
       SecondsText(AParts[I].Offset), SecondsText(AParts[I].Duration)]);
   end;
   Result := Result + sLineBreak + '  ]';
+end;
+
+{ Sorts AWords by start time, stable (merge sort): words of equal start
+  keep their order. }
+procedure SortWordsByTime(var AWords: TWhisperWordArray);
+var
+  Tmp: TWhisperWordArray;
+
+  procedure Merge(ALo, AHi: Integer);
+  var
+    Mid, I, J, K: Integer;
+  begin
+    if AHi <= ALo then
+      Exit;
+    Mid := (ALo + AHi) div 2;
+    Merge(ALo, Mid);
+    Merge(Mid + 1, AHi);
+    I := ALo;
+    J := Mid + 1;
+    K := ALo;
+    while (I <= Mid) and (J <= AHi) do
+    begin
+      if AWords[J].T0 < AWords[I].T0 then
+      begin
+        Tmp[K] := AWords[J];
+        Inc(J);
+      end
+      else
+      begin
+        Tmp[K] := AWords[I];
+        Inc(I);
+      end;
+      Inc(K);
+    end;
+    while I <= Mid do
+    begin
+      Tmp[K] := AWords[I];
+      Inc(I);
+      Inc(K);
+    end;
+    while J <= AHi do
+    begin
+      Tmp[K] := AWords[J];
+      Inc(J);
+      Inc(K);
+    end;
+    for K := ALo to AHi do
+      AWords[K] := Tmp[K];
+  end;
+
+begin
+  Tmp := nil;
+  SetLength(Tmp, Length(AWords));
+  Merge(0, High(AWords));
+end;
+
+type
+  { What a JSON value is. }
+  TJsonKind = (jkNull, jkBool, jkNumber, jkString, jkArray, jkObject);
+
+  { A JSON value: a small tree, for reading WhisperConsole's own files. }
+  TJsonNode = class
+  public
+    { What it is. }
+    Kind: TJsonKind;
+    { A string's text, or a number as written. }
+    Text: string;
+    { A bool's value. }
+    Bool: Boolean;
+    { An object's member names, in order (Items holds their values). }
+    Names: TStringList;
+    { Array items, or object member values. }
+    Items: TList;
+    { An empty value of AKind. }
+    constructor Create(AKind: TJsonKind);
+    { Frees the children. }
+    destructor Destroy; override;
+    { Number of items. }
+    function Count: Integer;
+    { Item AIndex. }
+    function Item(AIndex: Integer): TJsonNode;
+    { The member named AName, nil when absent (or not an object). }
+    function Member(const AName: string): TJsonNode;
+    { The member named AName as a number, ADefault when absent. }
+    function Num(const AName: string; ADefault: Double): Double;
+    { The member named AName as a string, '' when absent. }
+    function Str(const AName: string): string;
+  end;
+
+constructor TJsonNode.Create(AKind: TJsonKind);
+begin
+  inherited Create;
+  Kind := AKind;
+  if AKind in [jkArray, jkObject] then
+    Items := TList.Create;
+  if AKind = jkObject then
+    Names := TStringList.Create;
+end;
+
+destructor TJsonNode.Destroy;
+var
+  I: Integer;
+begin
+  if Items <> nil then
+    for I := 0 to Items.Count - 1 do
+      TJsonNode(Items[I]).Free;
+  Items.Free;
+  Names.Free;
+  inherited;
+end;
+
+function TJsonNode.Count: Integer;
+begin
+  if Items = nil then
+    Result := 0
+  else
+    Result := Items.Count;
+end;
+
+function TJsonNode.Item(AIndex: Integer): TJsonNode;
+begin
+  Result := TJsonNode(Items[AIndex]);
+end;
+
+function TJsonNode.Member(const AName: string): TJsonNode;
+var
+  I: Integer;
+begin
+  Result := nil;
+  if Kind <> jkObject then
+    Exit;
+  I := Names.IndexOf(AName);
+  if I >= 0 then
+    Result := TJsonNode(Items[I]);
+end;
+
+function TJsonNode.Num(const AName: string; ADefault: Double): Double;
+var
+  N: TJsonNode;
+  FS: TFormatSettings;
+begin
+  Result := ADefault;
+  N := Member(AName);
+  if (N = nil) or (N.Kind <> jkNumber) then
+    Exit;
+  FS := FormatSettings;
+  FS.DecimalSeparator := '.';
+  Result := StrToFloatDef(N.Text, ADefault, FS);
+end;
+
+function TJsonNode.Str(const AName: string): string;
+var
+  N: TJsonNode;
+begin
+  Result := '';
+  N := Member(AName);
+  if (N <> nil) and (N.Kind = jkString) then
+    Result := N.Text;
+end;
+
+{ Code point ACode as a string (UTF-16 with Delphi; UTF-8 bytes with FPC,
+  copied - an assignment would convert through the system code page). }
+function JsonCodeText(ACode: Cardinal): string;
+var
+  W: UnicodeString;
+  {$ifdef FPC}
+  U: RawByteString;
+  {$endif}
+begin
+  if ACode > $FFFF then
+  begin
+    Dec(ACode, $10000);
+    W := WideChar($D800 + (ACode shr 10)) + WideChar($DC00 + (ACode and $3FF));
+  end
+  else
+    W := WideChar(ACode);
+  {$ifdef FPC}
+  U := UTF8Encode(W);
+  SetLength(Result, Length(U));
+  if Length(U) > 0 then
+    Move(U[1], Result[1], Length(U));
+  {$else}
+  Result := W;
+  {$endif}
+end;
+
+type
+  { The JSON reader's state. }
+  TJsonReader = record
+    { The text. }
+    Text: string;
+    { Next character. }
+    P: Integer;
+    { Length of Text. }
+    N: Integer;
+  end;
+
+{ Raises an EWhisperError about AWhat at the reader's place. }
+procedure JsonFail(const R: TJsonReader; const AWhat: string);
+begin
+  raise EWhisperError.CreateFmt('JSON: %s at character %d', [AWhat, R.P]);
+end;
+
+{ Skips white space. }
+procedure JsonSkip(var R: TJsonReader);
+begin
+  while (R.P <= R.N) and CharInSet(R.Text[R.P], [' ', #9, #10, #13]) do
+    Inc(R.P);
+end;
+
+{ Reads a string (R.P at its opening quote). }
+function JsonString(var R: TJsonReader): string;
+var
+  Run: Integer;
+  Code, Low_: Cardinal;
+begin
+  Inc(R.P);
+  Result := '';
+  Run := R.P;
+  while True do
+  begin
+    if R.P > R.N then
+      JsonFail(R, 'unterminated string');
+    if R.Text[R.P] = '"' then
+      Break;
+    if R.Text[R.P] = '\' then
+    begin
+      Result := Result + Copy(R.Text, Run, R.P - Run);
+      Inc(R.P);
+      if R.P > R.N then
+        JsonFail(R, 'unterminated string');
+      case R.Text[R.P] of
+        '"', '\', '/': Result := Result + R.Text[R.P];
+        'b': Result := Result + #8;
+        'f': Result := Result + #12;
+        'n': Result := Result + #10;
+        'r': Result := Result + #13;
+        't': Result := Result + #9;
+        'u':
+          begin
+            Code := Cardinal(StrToIntDef('$' + Copy(R.Text, R.P + 1, 4), $FFFD));
+            Inc(R.P, 4);
+            // a surrogate pair: two escapes
+            if (Code >= $D800) and (Code <= $DBFF) and (Copy(R.Text, R.P + 1, 2) = '\u') then
+            begin
+              Low_ := Cardinal(StrToIntDef('$' + Copy(R.Text, R.P + 3, 4), 0));
+              if (Low_ >= $DC00) and (Low_ <= $DFFF) then
+              begin
+                Code := $10000 + ((Code - $D800) shl 10) + (Low_ - $DC00);
+                Inc(R.P, 6);
+              end;
+            end;
+            Result := Result + JsonCodeText(Code);
+          end;
+      else
+        JsonFail(R, 'bad escape');
+      end;
+      Inc(R.P);
+      Run := R.P;
+      Continue;
+    end;
+    Inc(R.P);
+  end;
+  Result := Result + Copy(R.Text, Run, R.P - Run);
+  Inc(R.P);
+end;
+
+{ Reads a value. }
+function JsonValue(var R: TJsonReader): TJsonNode;
+var
+  Start: Integer;
+  Name: string;
+  Done: Boolean;
+begin
+  JsonSkip(R);
+  if R.P > R.N then
+    JsonFail(R, 'value expected');
+  case R.Text[R.P] of
+    '{', '[':
+      begin
+        if R.Text[R.P] = '{' then
+          Result := TJsonNode.Create(jkObject)
+        else
+          Result := TJsonNode.Create(jkArray);
+        try
+          Inc(R.P);
+          JsonSkip(R);
+          Done := (R.P <= R.N) and CharInSet(R.Text[R.P], ['}', ']']);
+          if Done then
+            Inc(R.P);
+          while not Done do
+          begin
+            if Result.Kind = jkObject then
+            begin
+              JsonSkip(R);
+              if (R.P > R.N) or (R.Text[R.P] <> '"') then
+                JsonFail(R, 'member name expected');
+              Name := JsonString(R);
+              JsonSkip(R);
+              if (R.P > R.N) or (R.Text[R.P] <> ':') then
+                JsonFail(R, 'colon expected');
+              Inc(R.P);
+              Result.Names.Add(Name);
+            end;
+            Result.Items.Add(JsonValue(R));
+            JsonSkip(R);
+            if (R.P <= R.N) and (R.Text[R.P] = ',') then
+              Inc(R.P)
+            else if (R.P <= R.N) and CharInSet(R.Text[R.P], ['}', ']']) then
+            begin
+              Inc(R.P);
+              Done := True;
+            end
+            else
+              JsonFail(R, 'comma or end expected');
+          end;
+        except
+          Result.Free;
+          raise;
+        end;
+      end;
+    '"':
+      begin
+        Result := TJsonNode.Create(jkString);
+        Result.Text := JsonString(R);
+      end;
+  else
+    if Copy(R.Text, R.P, 4) = 'true' then
+    begin
+      Result := TJsonNode.Create(jkBool);
+      Result.Bool := True;
+      Inc(R.P, 4);
+    end
+    else if Copy(R.Text, R.P, 5) = 'false' then
+    begin
+      Result := TJsonNode.Create(jkBool);
+      Inc(R.P, 5);
+    end
+    else if Copy(R.Text, R.P, 4) = 'null' then
+    begin
+      Result := TJsonNode.Create(jkNull);
+      Inc(R.P, 4);
+    end
+    else
+    begin
+      Start := R.P;
+      while (R.P <= R.N) and CharInSet(R.Text[R.P], ['0'..'9', '-', '+', '.', 'e', 'E']) do
+        Inc(R.P);
+      if R.P = Start then
+        JsonFail(R, 'value expected');
+      Result := TJsonNode.Create(jkNumber);
+      Result.Text := Copy(R.Text, Start, R.P - Start);
+    end;
+  end;
+end;
+
+{ Parses AText as JSON (enough for WhisperConsole's own files).
+  @raises(EWhisperError at the first thing it cannot read.) }
+function ParseJson(const AText: string): TJsonNode;
+var
+  R: TJsonReader;
+begin
+  R.Text := AText;
+  R.N := Length(AText);
+  R.P := 1;
+  // a byte order mark (FPC: the UTF-8 bytes; Delphi: U+FEFF)
+  if (R.N >= 3) and (Ord(AText[1]) = $EF) and (Ord(AText[2]) = $BB) and (Ord(AText[3]) = $BF) then
+    R.P := 4
+  else if (R.N >= 1) and (Ord(AText[1]) = $FEFF) then
+    R.P := 2;
+  Result := JsonValue(R);
+  JsonSkip(R);
+  if R.P <= R.N then
+  begin
+    Result.Free;
+    JsonFail(R, 'text after the value');
+  end;
+end;
+
+function WhisperTranscriptionFromJson(const AJson: string; out AParts: TWhisperAudioPartArray): TWhisperTranscription;
+var
+  Root, Segs, Seg, Ws, W, Parts, Pt: TJsonNode;
+  I, K, NW: Integer;
+  Timing: string;
+begin
+  Result := Default(TWhisperTranscription);
+  AParts := nil;
+  Root := ParseJson(AJson);
+  try
+    Segs := Root.Member('segments');
+    if (Segs = nil) or (Segs.Kind <> jkArray) then
+      raise EWhisperError.Create('Not a WhisperConsole JSON: no "segments"');
+    Result.LanguageCode := Root.Str('language');
+    Timing := Root.Str('word_timing');
+    if Timing = WhisperWordTimingName(wwtDtw) then
+      Result.WordTiming := wwtDtw
+    else if Timing = WhisperWordTimingName(wwtTokenTimestamps) then
+      Result.WordTiming := wwtTokenTimestamps;
+    Result.AudioSeconds := Root.Num('audio_seconds', 0);
+    SetLength(Result.Segments, Segs.Count);
+    NW := 0;
+    for I := 0 to Segs.Count - 1 do
+    begin
+      Seg := Segs.Item(I);
+      Result.Segments[I].Index := I;
+      Result.Segments[I].T0 := Round(Seg.Num('start', 0) * WHISPER_TICKS_PER_SECOND);
+      Result.Segments[I].T1 := Round(Seg.Num('end', 0) * WHISPER_TICKS_PER_SECOND);
+      Result.Segments[I].Text := Seg.Str('text');
+      Ws := Seg.Member('words');
+      if (Ws = nil) or (Ws.Kind <> jkArray) then
+        Continue;
+      for K := 0 to Ws.Count - 1 do
+      begin
+        W := Ws.Item(K);
+        if NW = Length(Result.Words) then
+          SetLength(Result.Words, NW * 2 + 1024);
+        Result.Words[NW].Text := W.Str('word');
+        Result.Words[NW].T0 := Round(W.Num('start', 0) * WHISPER_TICKS_PER_SECOND);
+        Result.Words[NW].T1 := Round(W.Num('end', 0) * WHISPER_TICKS_PER_SECOND);
+        Result.Words[NW].Probability := W.Num('probability', 0);
+        Result.Words[NW].Segment := I;
+        Inc(NW);
+      end;
+    end;
+    SetLength(Result.Words, NW);
+    // the JSON keeps a segment's words together; in the run they are in
+    // time order (FillGaps can put another segment's words between them)
+    SortWordsByTime(Result.Words);
+    Parts := Root.Member('parts');
+    if (Parts <> nil) and (Parts.Kind = jkArray) then
+    begin
+      SetLength(AParts, Parts.Count);
+      for I := 0 to Parts.Count - 1 do
+      begin
+        Pt := Parts.Item(I);
+        AParts[I].FileName := Pt.Str('file');
+        AParts[I].Title := Pt.Str('title');
+        AParts[I].Start := Pt.Num('start', 0);
+        AParts[I].Offset := Pt.Num('offset', 0);
+        AParts[I].Duration := Pt.Num('duration', 0);
+        AParts[I].EndTime := AParts[I].Start + AParts[I].Duration;
+        AParts[I].Read := True;
+      end;
+    end;
+  finally
+    Root.Free;
+  end;
 end;
 
 { TWhisperAudioSet }

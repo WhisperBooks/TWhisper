@@ -161,7 +161,7 @@ speed never picks the model on its own (accuracy).
   even after a push. A corrected zip gets the NEXT number, never the old
   name; say which number it replaces. Every delivery says what it goes on
   top of: a zip number, or a commit when nothing is pending. Last number
-  used: 20. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
+  used: 21. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
   number in every zip that changes lib/ or the console (its first log
   line says which build made a log - owner was losing track, 20:26).
 - When the owner says a push is done: clone or fetch into a SEPARATE scratch
@@ -184,6 +184,45 @@ speed never picks the model on its own (accuracy).
   repos' packages). Otherwise say "NO PACKAGE REBUILD", in capitals.
 
 ## Handover - READ THIS FIRST (latest: session 5, 2026-11-14 afternoon)
+
+### EPUB sync pipeline (zip 21, on top of 4c4be57 "Claude review push")
+Owner, 2026-11-15: "yep, off we go" - transcribe the LibriVox Moby Dick
+(Stewart Wills: 5 m4b, chapter-marked: "Chapter 000: Etymology and
+Extracts", "Chapter 001-002", ...), align with the IDPF Moby-Dick EPUB,
+write the synced book with EpubUnum's TEpubWriter, compare with the IDPF's
+human sync of chapters 1-2 (the same recording: its audio is Wills').
+- KEPT SEPARATE: TWhisper (public) and Epubunum (private) do not use each
+  other's units; plain files join them. EpubConsole --words (EPUB word
+  numbers) -> WhisperConsole --align-words / --timings -> EpubConsole
+  --overlay TIMINGS OUT.epub (takes the audio from the timings' "# audio
+  N: path" lines). A GUI app linking both can come later.
+- Whisper.Align: WhisperSplitBookWords (an EPUB word with dashes,
+  'ago' + em dash + 'never', is two aligner words; map back) and
+  WhisperJoinAligned (a word's time = its timed parts', its match = the
+  first timed part's). TWhisperIndexArray.
+- Whisper.AudioSet: WhisperTranscriptionFromJson - reads --json back
+  (segments, words sorted by time, language, timing, "parts"); a small
+  JSON reader (TJsonNode) in the implementation.
+- WhisperConsole: --align-words (EpubConsole word list; role nav left
+  out; reports in EPUB word numbers), --timings (exact, similar,
+  interpolated, moved words; times per audio FILE via the parts: start
+  in its part, end clamped to that part), --from-json (no model, no
+  whisper.cpp: align again in seconds); WriteFileLabels / labels work
+  from a parts array. CONSOLE_DELIVERY 21.
+TESTED here (FPC 3.0 + TStringBuilder stand-in; no whisper.cpp needed for
+--from-json): a synthetic transcript JSON of Moby-Dick ch 1-2 (the IDPF
+human timings, 38 words dropped, Ishmael heard Ishmail, numbers kept,
+a LibriVox preamble, two parts split at 860 s): 3619 exact, 98
+interpolated, ishmael=ishmail learned; --timings: all 3613 words in the
+right file at the right local time (1477 in file 2); EpubConsole
+--overlay with the audio from the timings (the IDPF mp4 cut into two
+m4b): epubcheck 0 / 0, every clip = its timing. FOUND (synthetic only):
+the preamble's "All" paired with "all," at the end of the Extracts (not in
+that synthetic audio) and the 58 words before Chapter 1 were interpolated
+into the silence before it - in the real recording the Extracts are read
+(Part 1 = "Chapter 000: Etymology and Extracts"); watch for it where a
+recording lacks text the book has just before a chapter.
+NOT RUN: Delphi build, a real transcription (owner).
 
 ### Review fixes (zip 20, on top of 9bb9d2a "Claude push")
 From a code review by reading (owner, 2026-11-15: "code review", then "y" to

@@ -7,6 +7,11 @@
                    [--words] [--labels FILE] [--json FILE] [--no-dtw] [--no-flash] [--no-context]
                    [--prompt TEXT] [--carry-prompt] [--align BOOK.txt] [--align-labels FILE]
                    [--chapters] [--ffmpeg FOLDER] [--no-fill-gaps]
+                   [--align-words WORDS.txt] [--timings FILE]
+    WhisperConsole --from-json FILE [--align BOOK.txt | --align-words WORDS.txt]
+                   [--align-labels FILE] [--timings FILE] [--labels FILE]
+                                      (a transcription saved with --json, aligned
+                                      again without transcribing: no model needed)
     WhisperConsole --check            (library + layout check, device list)
     WhisperConsole --bench <model.bin> <audio.wav> [language] [--seconds N|all]
                    [--devices CUDA0,Vulkan0] [--runs N] [--threads N] [--also <model2.bin>]...
@@ -39,6 +44,18 @@
   --align-labels FILE: Audacity labels of the BOOK's words with their times
            (interpolated ones marked '?') and a label at every stretch not
            spoken - to check them by ear (proof-listening).
+  --align-words WORDS.txt: align with an EPUB's words instead: the list
+           EpubConsole <book.epub> --words writes (number, document, role,
+           text - tab separated); words of the contents page (role nav) are
+           left out. Reports give the EPUB's word numbers.
+  --timings FILE: with --align-words, the timed words for EpubConsole
+           <book.epub> --overlay FILE OUT.epub: one line per word, "number
+           start end audio" - seconds in that audio file, audio = the
+           file's number; the files are listed first ("# audio N: path").
+           Words not spoken or not heard get no line (no clip).
+  --from-json FILE: read a transcription written by --json (with its
+           parts) instead of transcribing: align it again - another book,
+           a newer aligner - in seconds; no model or whisper.cpp needed.
   <audio>: a file, a folder (every audio file in it, in natural order:
            chapter2 before chapter10) or a playlist (.m3u, .m3u8, .txt).
            .wav files are read directly; anything else (.m4b, .m4a, .mp3,
@@ -117,26 +134,161 @@ const
   { The delivery this console comes from (zip number): printed first, so a
     log shows which build made it. Bumped with every zip that changes the
     library or the console. }
-  CONSOLE_DELIVERY = 20;
+  CONSOLE_DELIVERY = 21;
   { Learned habits listed by --align. }
   ALIGN_LEARNED_SHOWN = 20;
   { Marks an interpolated book word in the --align-labels file. }
   INTERPOLATED_MARK = ' ?';
 
-{ Aligns the words of R with the text of ABookFile, prints the figures and
-  the stretches not spoken / not heard clearly, and writes the book's words
-  as Audacity labels to ALabelsFile (when not ''). }
-procedure ReportAlignment(const ABookFile, ALabelsFile: string; const R: TWhisperTranscription);
+{ The part of AParts word time AT (10 ms units, on the joined time line)
+  is in: the last part starting at or before it (0 when none). }
+function PartAt(const AParts: TWhisperAudioPartArray; AT: Int64): Integer;
+begin
+  Result := High(AParts);
+  while (Result > 0) and (AT < Round(AParts[Result].Offset * WHISPER_TICKS_PER_SECOND)) do
+    Dec(Result);
+end;
+
+{ The audio files of AParts in order of first appearance. }
+function PartFiles(const AParts: TWhisperAudioPartArray): TStringList;
 var
-  Book: TWhisperStringArray;
-  Aligned: TWhisperAlignedWordArray;
+  I: Integer;
+begin
+  Result := TStringList.Create;
+  for I := 0 to High(AParts) do
+    if Result.IndexOf(AParts[I].FileName) < 0 then
+      Result.Add(AParts[I].FileName);
+end;
+
+{ Reads an EPUB's word list (EpubConsole --words: number, document, role,
+  text - tab separated): AWords the texts, ANumbers their numbers. Words of
+  the contents page (role nav) are left out: never read aloud, and a
+  chapter list would match chapter titles away from their chapters. }
+procedure LoadWordList(const AFileName: string; out AWords: TWhisperStringArray; out ANumbers: TWhisperIndexArray);
+var
+  Lines, Fields: TStringList;
+  I, N: Integer;
+begin
+  AWords := nil;
+  ANumbers := nil;
+  Lines := TStringList.Create;
+  Fields := TStringList.Create;
+  try
+    Lines.Text := WhisperLoadTextFile(AFileName);
+    Fields.Delimiter := #9;
+    Fields.StrictDelimiter := True;
+    SetLength(AWords, Lines.Count);
+    SetLength(ANumbers, Lines.Count);
+    N := 0;
+    for I := 0 to Lines.Count - 1 do
+    begin
+      Fields.DelimitedText := Lines[I];
+      if (Fields.Count < 4) or (StrToIntDef(Fields[0], 0) < 1) then
+        Continue;
+      if Fields[2] = 'nav' then
+        Continue;
+      AWords[N] := Fields[3];
+      ANumbers[N] := StrToInt(Fields[0]);
+      Inc(N);
+    end;
+    SetLength(AWords, N);
+    SetLength(ANumbers, N);
+    if N = 0 then
+      raise EWhisperError.CreateFmt('%s holds no words (expected EpubConsole --words output)', [AFileName]);
+  finally
+    Fields.Free;
+    Lines.Free;
+  end;
+end;
+
+{ Writes the timed EPUB words for EpubConsole --overlay: "# audio N: path"
+  for each file, then "number start end audio" per word with a time
+  (exact, similar, interpolated, moved), in seconds of its file. }
+procedure WriteTimings(const AFileName: string; const AWords: TWhisperStringArray;
+  const ANumbers: TWhisperIndexArray; const AJoined: TWhisperAlignedWordArray;
+  const AParts: TWhisperAudioPartArray; const ASingleFile: string);
+var
+  Out, Files: TStringList;
+  I, P, F, Written: Integer;
+  Shift, PartEnd: Int64;
+  FS: TFormatSettings;
+  T0, T1: Int64;
+begin
+  FS := FormatSettings;
+  FS.DecimalSeparator := '.';
+  Out := TStringList.Create;
+  Files := PartFiles(AParts);
+  try
+    if Files.Count = 0 then
+      Files.Add(ExpandFileName(ASingleFile));
+    Out.Add('# EPUB word timings from WhisperConsole: number start end audio (seconds in that file)');
+    Out.Add('# for: EpubConsole <book.epub> --overlay THIS-FILE OUT.epub');
+    for F := 0 to Files.Count - 1 do
+      Out.Add(Format('# audio %d: %s', [F + 1, Files[F]]));
+    Written := 0;
+    for I := 0 to High(AWords) do
+    begin
+      if (AJoined[I].T0 < 0) or not (AJoined[I].Match in [wamExact, wamSimilar, wamInterpolated, wamMoved]) then
+        Continue;
+      T0 := AJoined[I].T0;
+      T1 := AJoined[I].T1;
+      F := 0;
+      Shift := 0;
+      PartEnd := High(Int64);
+      if Length(AParts) > 0 then
+      begin
+        // the part the word starts in: its file, and that file's time
+        P := PartAt(AParts, T0);
+        F := Files.IndexOf(AParts[P].FileName);
+        Shift := Round((AParts[P].Start - AParts[P].Offset) * WHISPER_TICKS_PER_SECOND);
+        PartEnd := Round((AParts[P].Offset + AParts[P].Duration) * WHISPER_TICKS_PER_SECOND);
+      end;
+      if T1 > PartEnd then
+        T1 := PartEnd;   // a word across two files ends with the first
+      if T1 <= T0 then
+        T1 := T0 + 1;
+      Out.Add(Format('%d %.3f %.3f %d', [ANumbers[I], (T0 + Shift) / WHISPER_TICKS_PER_SECOND,
+        (T1 + Shift) / WHISPER_TICKS_PER_SECOND, F + 1], FS));
+      Inc(Written);
+    end;
+    WhisperSaveTextFile(AFileName, Out.Text);
+    WriteLn(Format('%d timed EPUB word(s) of %d written to %s (%d audio file(s))', [Written, Length(AWords),
+      AFileName, Files.Count]));
+  finally
+    Files.Free;
+    Out.Free;
+  end;
+end;
+
+{ Aligns the words of R with the text of ABookFile (a plain text, or with
+  AWordList an EPUB's word list), prints the figures and the stretches not
+  spoken / not heard clearly, writes the book's words as Audacity labels
+  to ALabelsFile and the timed EPUB words to ATimingsFile (when not '').
+  AParts: the recording's parts (empty for one file, ASingleFile). }
+procedure ReportAlignment(const ABookFile: string; AWordList: Boolean; const ALabelsFile, ATimingsFile: string;
+  const R: TWhisperTranscription; const AParts: TWhisperAudioPartArray; const ASingleFile: string);
+var
+  Book, Given: TWhisperStringArray;
+  Numbers, Map: TWhisperIndexArray;
+  Aligned, Joined: TWhisperAlignedWordArray;
   Stats: TWhisperAlignStats;
   Regions: TWhisperAlignRegionArray;
   Labels: TWhisperWordArray;
   I, K, N: Integer;
-  Quote, Where: string;
+  Quote, Where, Range: string;
 begin
-  Book := WhisperSplitText(WhisperLoadTextFile(ABookFile));
+  if AWordList then
+  begin
+    LoadWordList(ABookFile, Given, Numbers);
+    // a word of the EPUB may hold dashes: the aligner gets its parts
+    Book := WhisperSplitBookWords(Given, Map);
+  end
+  else
+  begin
+    Book := WhisperSplitText(WhisperLoadTextFile(ABookFile));
+    Map := nil;
+    Numbers := nil;
+  end;
   Aligned := WhisperAlignText(Book, R.Words, Stats);
   WriteLn(Format('Aligned with %s: %d book words - %d exact, %d similar, %d interpolated, %d not spoken, ' +
     '%d not heard, %d moved (reading speed %.2f words/s, %d anchors, %d pass(es), %d stray match(es) dropped)',
@@ -166,8 +318,18 @@ begin
       Where := 'start'
     else
       Where := WhisperTimeToStr(Regions[I].Time);
-    WriteLn(Format('  %s  %s, book words %d-%d:%s', [Where, WhisperAlignMatchName(Regions[I].Match),
-      Regions[I].First, Regions[I].Last, Quote]));
+    if AWordList then
+      Range := Format('EPUB words %d-%d', [Numbers[Map[Regions[I].First]], Numbers[Map[Regions[I].Last]]])
+    else
+      Range := Format('book words %d-%d', [Regions[I].First, Regions[I].Last]);
+    WriteLn(Format('  %s  %s, %s:%s', [Where, WhisperAlignMatchName(Regions[I].Match), Range, Quote]));
+  end;
+  if ATimingsFile <> '' then
+  begin
+    if not AWordList then
+      raise EWhisperError.Create('--timings needs the EPUB''s words (--align-words), not a plain text');
+    Joined := WhisperJoinAligned(Aligned, Map, Length(Given));
+    WriteTimings(ATimingsFile, Given, Numbers, Joined, AParts, ASingleFile);
   end;
   if ALabelsFile = '' then
     Exit;
@@ -275,37 +437,41 @@ begin
     WhisperAudioPartsToJson(AParts) + sLineBreak + Copy(AJson, P, MaxInt);
 end;
 
-{ Writes an Audacity label track per audio file (ABase-01.txt, ...), the
-  words' times moved from the joined time line to that file's. }
-procedure WriteFileLabels(const ABase: string; ASet: TWhisperAudioSet; const AWords: TWhisperWordArray);
+{ Writes an Audacity label track per audio file of AParts (ABase-01.txt,
+  ...), the words' times moved from the joined time line to that file's. }
+procedure WriteFileLabels(const ABase: string; const AParts: TWhisperAudioPartArray; const AWords: TWhisperWordArray);
 var
   F, I, P, N: Integer;
   Own: TWhisperWordArray;
   Shift: Int64;
   Name: string;
+  Files: TStringList;
 begin
-  for F := 0 to ASet.Files.Count - 1 do
-  begin
-    Own := nil;
-    N := 0;
-    for I := 0 to High(AWords) do
+  Files := PartFiles(AParts);
+  try
+    for F := 0 to Files.Count - 1 do
     begin
-      // the part the word starts in
-      P := High(ASet.Parts);
-      while (P > 0) and (AWords[I].T0 < Round(ASet.Parts[P].Offset * WHISPER_TICKS_PER_SECOND)) do
-        Dec(P);
-      if ASet.Parts[P].FileName <> ASet.Files[F] then
-        Continue;
-      Shift := Round((ASet.Parts[P].Start - ASet.Parts[P].Offset) * WHISPER_TICKS_PER_SECOND);
-      SetLength(Own, N + 1);
-      Own[N] := AWords[I];
-      Inc(Own[N].T0, Shift);
-      Inc(Own[N].T1, Shift);
-      Inc(N);
+      Own := nil;
+      N := 0;
+      for I := 0 to High(AWords) do
+      begin
+        // the part the word starts in
+        P := PartAt(AParts, AWords[I].T0);
+        if AParts[P].FileName <> Files[F] then
+          Continue;
+        Shift := Round((AParts[P].Start - AParts[P].Offset) * WHISPER_TICKS_PER_SECOND);
+        SetLength(Own, N + 1);
+        Own[N] := AWords[I];
+        Inc(Own[N].T0, Shift);
+        Inc(Own[N].T1, Shift);
+        Inc(N);
+      end;
+      Name := ChangeFileExt(ABase, '') + Format('-%.2d', [F + 1]) + ExtractFileExt(ABase);
+      WhisperSaveTextFile(Name, WhisperWordsToLabels(Own));
+      WriteLn(Format('Audacity labels of %s written to %s', [ExtractFileName(Files[F]), Name]));
     end;
-    Name := ChangeFileExt(ABase, '') + Format('-%.2d', [F + 1]) + ExtractFileExt(ABase);
-    WhisperSaveTextFile(Name, WhisperWordsToLabels(Own));
-    WriteLn(Format('Audacity labels of %s written to %s', [ExtractFileName(ASet.Files[F]), Name]));
+  finally
+    Files.Free;
   end;
 end;
 
@@ -382,6 +548,9 @@ var
   R: TWhisperTranscription;
   ModelFile, AudioFile, Lang, Arg, DeviceName, LabelsFile, JsonFile: string;
   AlignFile, AlignLabels, Prompt: string;
+  TimingsFile, FromJson: string;
+  AlignIsWords: Boolean;
+  JsonParts: TWhisperAudioPartArray;
   CheckOnly, Translate, Tokens, LayoutOk, Bench, WantWords, NoDtw, NoFlash, NoContext: Boolean;
   CarryPrompt: Boolean;
   BenchSeconds: Double;
@@ -421,6 +590,9 @@ begin
       CarryPrompt := False;
       AlignFile := '';
       AlignLabels := '';
+      AlignIsWords := False;
+      TimingsFile := '';
+      FromJson := '';
       Prompt := '';
       LabelsFile := '';
       JsonFile := '';
@@ -516,6 +688,23 @@ begin
           WantWords := True;
           Inc(I);
         end
+        else if (Arg = '--align-words') and (I <= ParamCount) then
+        begin
+          AlignFile := ParamStr(I);
+          AlignIsWords := True;
+          WantWords := True;
+          Inc(I);
+        end
+        else if (Arg = '--timings') and (I <= ParamCount) then
+        begin
+          TimingsFile := ParamStr(I);
+          Inc(I);
+        end
+        else if (Arg = '--from-json') and (I <= ParamCount) then
+        begin
+          FromJson := ParamStr(I);
+          Inc(I);
+        end
         else if (Arg = '--align-labels') and (I <= ParamCount) then
         begin
           AlignLabels := ParamStr(I);
@@ -545,12 +734,37 @@ begin
         else
           Lang := Arg;
       end;
+      if FromJson <> '' then
+      begin
+        // a saved transcription: no model, no whisper.cpp
+        R := WhisperTranscriptionFromJson(WhisperLoadTextFile(FromJson), JsonParts);
+        WriteLn(Format('%s: %d segment(s), %d word(s) (%s), %.2f s of audio, %d part(s)', [FromJson,
+          Length(R.Segments), Length(R.Words), WhisperWordTimingName(R.WordTiming), R.AudioSeconds,
+          Length(JsonParts)]));
+        if LabelsFile <> '' then
+        begin
+          if Length(JsonParts) > 1 then
+            WriteFileLabels(LabelsFile, JsonParts, R.Words)
+          else
+          begin
+            WhisperSaveTextFile(LabelsFile, WhisperWordsToLabels(R.Words));
+            WriteLn('Audacity labels written to ', LabelsFile);
+          end;
+        end;
+        if AlignFile <> '' then
+          ReportAlignment(AlignFile, AlignIsWords, AlignLabels, TimingsFile, R, JsonParts, FromJson);
+        ExitCode := 0;
+        Exit;
+      end;
       if not CheckOnly and ((ModelFile = '') or (AudioFile = '')) then
       begin
         WriteLn('Usage: WhisperConsole <model.bin> <audio> [language] [--translate] [--device NAME] [--tokens]');
         WriteLn('                      [--words] [--labels FILE] [--json FILE] [--no-dtw] [--no-flash] [--no-context]');
         WriteLn('                      [--prompt TEXT] [--carry-prompt] [--align BOOK.txt] [--align-labels FILE]');
         WriteLn('                      [--chapters] [--ffmpeg FOLDER] [--no-fill-gaps]');
+        WriteLn('                      [--align-words WORDS.txt] [--timings FILE]');
+        WriteLn('       WhisperConsole --from-json FILE [--align BOOK.txt | --align-words WORDS.txt]');
+        WriteLn('                      [--align-labels FILE] [--timings FILE] [--labels FILE]');
         WriteLn('       WhisperConsole --check');
         WriteLn('       WhisperConsole --bench <model.bin> <audio.wav> [language] [--seconds N|all] [--devices A,B]');
         WriteLn('                      [--runs N] [--threads N] [--also <model2.bin>]...');
@@ -781,7 +995,7 @@ begin
             if LabelsFile <> '' then
             begin
               if (AudioIn <> nil) and (AudioIn.Files.Count > 1) then
-                WriteFileLabels(LabelsFile, AudioIn, R.Words)
+                WriteFileLabels(LabelsFile, AudioIn.Parts, R.Words)
               else
               begin
                 // one file: its own time line (a chapter's start included)
@@ -798,7 +1012,10 @@ begin
               WriteLn('JSON written to ', JsonFile);
             end;
             if AlignFile <> '' then
-              ReportAlignment(AlignFile, AlignLabels, R);
+              if AudioIn <> nil then
+                ReportAlignment(AlignFile, AlignIsWords, AlignLabels, TimingsFile, R, AudioIn.Parts, AudioFile)
+              else
+                ReportAlignment(AlignFile, AlignIsWords, AlignLabels, TimingsFile, R, nil, AudioFile);
           end;
           Lib.RemoveLogListener(Handler.Log);   // timings go to stderr
           if Assigned(Lib.Flat.whisper_print_timings) then

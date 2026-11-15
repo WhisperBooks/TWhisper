@@ -95,6 +95,40 @@ proof-listener for LibriVox recordings.
 .\WhisperConsole ggml-medium.en.bin aladdin.wav --align aladdin.txt --align-labels aladdin-book.txt
 ```
 
+## Syncing an EPUB (with EpubUnum's EpubConsole)
+
+Three steps, joined by plain files - TWhisper and EpubUnum stay separate:
+
+1. The book's words, numbered as the reader numbers them:
+   ```
+   .\EpubConsole book.epub --words book-words.txt
+   ```
+2. Transcribe the recording once, save it as JSON, align it with those
+   words and write the timed words:
+   ```
+   .\WhisperConsole ggml-large-v3-turbo.bin C:\audio\book --chapters --no-context --carry-prompt --prompt "It was read aloud, with care." --json book.json --align-words book-words.txt --timings book-timings.txt
+   ```
+   `<audio>` can be a folder (every file in it, in natural order) or a
+   playlist. `--align-words` leaves out the contents page; reports give
+   the EPUB's word numbers. `--timings` writes one line per timed word
+   ("number start end audio", seconds in that audio file) after the list
+   of the files ("# audio N: path"); words not spoken or not heard get no
+   line.
+3. Write the synced book (EPUB 3 media overlays; the audio files named in
+   the timings are copied in):
+   ```
+   .\EpubConsole book.epub --overlay book-timings.txt book-synced.epub
+   ```
+
+To align again - another edition of the book, a newer aligner - without
+transcribing again (no model, seconds):
+
+```
+.\WhisperConsole --from-json book.json --align-words book-words.txt --timings book-timings.txt
+```
+
+`--from-json` also takes `--align`, `--align-labels` and `--labels`.
+
 **Checking word timings by ear:** open the WAV in Audacity, File > Import >
 Labels..., choose the labels file. Each word is a label over the audio:
 click a label to select its span and play it (space). Check the start of a

@@ -79,6 +79,8 @@ const
 type
   { Words of a text, in reading order. }
   TWhisperStringArray = array of string;
+  { Indexes (WhisperSplitBookWords' map). }
+  TWhisperIndexArray = array of Integer;
 
   { How a book word got its time. }
   TWhisperAlignMatch = (
@@ -197,6 +199,21 @@ function WhisperNumberWords(ANumber: Int64; AOrdinal: Boolean = False): string;
   dashes, which books use without spaces): what @link(WhisperAlignText)
   expects. Punctuation stays with its word. }
 function WhisperSplitText(const AText: string): TWhisperStringArray;
+
+{ The words of an EPUB layer (or any word list) as the aligner wants them:
+  each word split again with @link(WhisperSplitText) - a book's word can
+  hold dashes ('ago' + em dash + 'never' is one word to EpubUnum, two to the
+  aligner). AMap[I] is the index of the given word that part I comes
+  from. }
+function WhisperSplitBookWords(const AWords: TWhisperStringArray; out AMap: TWhisperIndexArray): TWhisperStringArray;
+
+{ The alignment of the parts (@link(WhisperSplitBookWords)) folded back
+  onto the ACount given words: a word's time runs from the start of its
+  first timed part to the end of its last; its match is that of its first
+  timed part (wamNone when no part has a time, the first part's when
+  none is a word). }
+function WhisperJoinAligned(const AAligned: TWhisperAlignedWordArray; const AMap: TWhisperIndexArray;
+  ACount: Integer): TWhisperAlignedWordArray;
 
 { Aligns ABookWords (the text of record, in reading order) with the
   transcript words AWords. See the unit description.
@@ -1809,6 +1826,80 @@ begin
     end
     else if Result[I].Match <> wamNone then
       Run := 0;
+  end;
+end;
+
+function WhisperSplitBookWords(const AWords: TWhisperStringArray; out AMap: TWhisperIndexArray): TWhisperStringArray;
+var
+  I, K, N: Integer;
+  Parts: TWhisperStringArray;
+begin
+  Result := nil;
+  AMap := nil;
+  SetLength(Result, Length(AWords));
+  SetLength(AMap, Length(AWords));
+  N := 0;
+  for I := 0 to High(AWords) do
+  begin
+    Parts := WhisperSplitText(AWords[I]);
+    if Length(Parts) = 0 then
+    begin
+      // white space or dashes only: kept as one (it gets no time)
+      SetLength(Parts, 1);
+      Parts[0] := AWords[I];
+    end;
+    if N + Length(Parts) > Length(Result) then
+    begin
+      SetLength(Result, (N + Length(Parts)) * 2);
+      SetLength(AMap, Length(Result));
+    end;
+    for K := 0 to High(Parts) do
+    begin
+      Result[N] := Parts[K];
+      AMap[N] := I;
+      Inc(N);
+    end;
+  end;
+  SetLength(Result, N);
+  SetLength(AMap, N);
+end;
+
+function WhisperJoinAligned(const AAligned: TWhisperAlignedWordArray; const AMap: TWhisperIndexArray;
+  ACount: Integer): TWhisperAlignedWordArray;
+var
+  I, W: Integer;
+  Seen: array of Boolean;
+begin
+  Result := nil;
+  SetLength(Result, ACount);
+  Seen := nil;
+  SetLength(Seen, ACount);
+  for I := 0 to ACount - 1 do
+  begin
+    Result[I].T0 := -1;
+    Result[I].T1 := -1;
+    Result[I].Match := wamNone;
+    Result[I].WordIndex := -1;
+  end;
+  for I := 0 to High(AAligned) do
+  begin
+    W := AMap[I];
+    if (W < 0) or (W >= ACount) then
+      Continue;
+    if AAligned[I].T0 < 0 then
+    begin
+      // no time: the word's kind until a timed part comes
+      if not Seen[W] and (Result[W].Match = wamNone) then
+        Result[W].Match := AAligned[I].Match;
+      Continue;
+    end;
+    if not Seen[W] then
+    begin
+      Seen[W] := True;
+      Result[W] := AAligned[I];
+    end
+    else if AAligned[I].T1 > Result[W].T1 then
+      Result[W].T1 := AAligned[I].T1;
   end;
 end;
 
