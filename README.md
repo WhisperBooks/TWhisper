@@ -340,7 +340,10 @@ demos/WhisperConsole/README.md).
    raises.
 3. Call `TranscribeFileAsync('speech.wav')` or `TranscribeAsync(Samples)`.
    `OnSegment`, `OnProgress`, `OnLog` and finally `OnComplete` arrive on the
-   main thread. `Cancel` stops a run and keeps the segments so far.
+   main thread. `Cancel` stops a run and keeps the segments so far; it is
+   not lost when it comes before the run has started (while the file is
+   still being read). `Active := False` during a run cancels it, waits and
+   fires `OnComplete` (Cancelled) before it returns.
 
 ```pascal
 procedure TfrmMain.WhisperAPI1Segment(Sender: TObject; const ASegment: TWhisperSegment);

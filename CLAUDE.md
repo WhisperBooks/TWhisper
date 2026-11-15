@@ -161,7 +161,7 @@ speed never picks the model on its own (accuracy).
   even after a push. A corrected zip gets the NEXT number, never the old
   name; say which number it replaces. Every delivery says what it goes on
   top of: a zip number, or a commit when nothing is pending. Last number
-  used: 19. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
+  used: 20. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
   number in every zip that changes lib/ or the console (its first log
   line says which build made a log - owner was losing track, 20:26).
 - When the owner says a push is done: clone or fetch into a SEPARATE scratch
@@ -184,6 +184,61 @@ speed never picks the model on its own (accuracy).
   repos' packages). Otherwise say "NO PACKAGE REBUILD", in capitals.
 
 ## Handover - READ THIS FIRST (latest: session 5, 2026-11-14 afternoon)
+
+### Review fixes (zip 20, on top of 9bb9d2a "Claude push")
+From a code review by reading (owner, 2026-11-15: "code review", then "y" to
+a zip with the four fixes). NOT COMPILED OR RUN in that session (no FPC, no
+Delphi, no whisper.cpp there; pasdoc_check and project_check: 0 problems,
+verify_layout not run - no record changed): the owner's Delphi build and an
+FPC run are their test. FFmpegAPI got its own review and zip (FFmpegAPI-08).
+1. Whisper.Components, DoDeactivate: the worker is taken out of FWorker
+   BEFORE WaitFor. WaitFor on the main thread runs CheckSynchronize, which
+   delivered the worker's wmkComplete, and DeliverMessage freed FWorker -
+   the thread DoDeactivate was still waiting on (Windows: "handle is
+   invalid"). Only Active := False DURING a run got there: Destroy orphans
+   the messages first, and the demo disables Unload while busy. Now
+   OnComplete (Cancelled) fires inside Active := False; FDeactivating makes
+   TranscribeAsync / Transcribe raise while it waits, so a handler cannot
+   start a run on the model about to be freed. TO TEST: Active := False
+   from a button while a transcription runs.
+2. A cancel before the run starts is no longer lost. TWhisperRun.Execute
+   and TWhisperBenchmark.Run cleared FCancel when they STARTED, so a Cancel
+   during WhisperLoadWav (TranscribeFileAsync, BenchmarkFileAsync) or while
+   waiting for the model was dropped: the run went on to its end and
+   closing the form waited for all of it. Now TWhisperRun clears FCancel
+   when a run ENDS (FWasCancelled keeps it for Cancelled); an Execute
+   cancelled before it started does not call whisper.cpp and collects
+   nothing (the context still holds the run before). Consequence: Cancel on
+   an idle TWhisperRun stops its NEXT Execute. TWhisperBenchmark never
+   clears FCancel: a cancelled benchmark stays cancelled (make a new one).
+   TO TEST: TranscribeFileAsync of a long WAV, Cancel at once.
+3. Whisper.Words, WhisperBuildWords: tokens a word takes beyond its segment
+   (punctuation joined across a segment boundary) are carried into the next
+   segment's count (Carry). Before, every later segment of the run gave its
+   first word to the segment before - OpenAI's loop, which is per 30 s
+   window there and over the whole book here. How often the trigger occurs
+   is NOT measured: compare Words[].Segment before / after on a long book.
+4. FillGaps into the middle of a segment (a gap of 3 s or more between two
+   words of ONE segment): WhisperInsertTranscription puts the words in time
+   order and the segments after that segment, so the words of that segment
+   are no longer next to each other in Words. Conservative fix, the
+   insertion itself is unchanged: WhisperWordsToJson finds a segment's
+   words by their segment number (it dropped the second run), and
+   WhisperCleanTranscription checks the segment number between First and
+   Last and takes the earliest start / latest end for the DTW span. STILL
+   SO: that segment's Text covers the inserted stretch too, and the
+   inserted segments follow it. Splitting the segment in two was not done
+   (its Text and Tokens would have to be split; not without a compiler).
+Found in the same review and NOT fixed: Active := False (or freeing the
+component) inside a handler of a SYNCHRONOUS Transcribe frees the model
+under whisper_full (the model lock is re-entrant on one thread);
+TWhisperBenchmark.Cancel reads FCurrentRun without a lock while RunOne
+frees it; Whisper.API's finalization frees the library without looking at
+FModelCount (a component destroyed after it would call whisper_free through
+a freed TWhisperLib - check the unit order once at exit of the demo);
+LoadBackends with no folder lets ggml load backends from the current
+directory, and SetDllDirectoryW(nil) resets a directory the host program
+set; timing uses Now, not a stopwatch; no LICENSE file.
 
 ### What the project is for
 TWhisper (component TWhisperAPI) is the speech-to-text engine of a bigger

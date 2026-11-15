@@ -929,7 +929,7 @@ var
   Counts: TIntegerArray;
   W, Outs: TWordWorkArray;
   Median, MaxDur, LastSpeech, SegStart, SegEnd, Boundary: Double;
-  I, S, WI, Saved, NOut, F, L, N: Integer;
+  I, S, WI, Saved, Carry, NOut, F, L, N: Integer;
   Text: string;
 begin
   Result := nil;
@@ -961,9 +961,14 @@ begin
   NOut := 0;
   WI := 0;
   LastSpeech := 0;
+  Carry := 0;
   for S := 0 to High(ASegments) do
   begin
-    Saved := 0;
+    // A word can hold tokens of the next segment (punctuation joined across
+    // the boundary): they count for that segment. OpenAI starts every
+    // segment at 0, which is harmless per 30 s window; over a whole book
+    // every later segment would lose its first word to the one before.
+    Saved := Carry;
     F := NOut;
     while (WI < Length(W)) and ((Saved < Counts[S]) or (S = High(ASegments))) do
     begin
@@ -976,6 +981,9 @@ begin
       Inc(Saved, W[WI].TokenCount);
       Inc(WI);
     end;
+    Carry := Saved - Counts[S];
+    if Carry < 0 then
+      Carry := 0;
     if NOut = F then
       Continue;
     L := NOut - 1;
@@ -1049,9 +1057,33 @@ end;
 function WhisperWordsToJson(const AResult: TWhisperTranscription): string;
 var
   SB: TStringBuilder;
-  S, WI: Integer;
+  S, WI, K: Integer;
   First: Boolean;
+  FirstOf, LastOf, NextOf: TIntegerArray;
 begin
+  // The words of each segment as a chain, in the order of Words. They are
+  // not always next to each other: FillGaps can put a stretch between two
+  // words of one segment, and walking Words once then lost the rest of it.
+  FirstOf := nil;
+  LastOf := nil;
+  NextOf := nil;
+  SetLength(FirstOf, Length(AResult.Segments));
+  SetLength(LastOf, Length(AResult.Segments));
+  SetLength(NextOf, Length(AResult.Words));
+  for S := 0 to High(FirstOf) do
+    FirstOf[S] := -1;
+  for WI := 0 to High(AResult.Words) do
+  begin
+    NextOf[WI] := -1;
+    K := AResult.Words[WI].Segment;
+    if (K < 0) or (K > High(FirstOf)) then
+      Continue;
+    if FirstOf[K] < 0 then
+      FirstOf[K] := WI
+    else
+      NextOf[LastOf[K]] := WI;
+    LastOf[K] := WI;
+  end;
   SB := TStringBuilder.Create;
   try
     SB.Append('{').Append(sLineBreak);
@@ -1061,7 +1093,6 @@ begin
     SB.Append('  "audio_seconds": ').Append(TicksText(Round(AResult.AudioSeconds * WHISPER_TICKS_PER_SECOND)))
       .Append(',').Append(sLineBreak);
     SB.Append('  "segments": [');
-    WI := 0;
     for S := 0 to High(AResult.Segments) do
     begin
       if S > 0 then
@@ -1071,10 +1102,9 @@ begin
         .Append(', "end": ').Append(TicksText(AResult.Segments[S].T1))
         .Append(', "text": ').Append(JsonString(Trim(AResult.Segments[S].Text)))
         .Append(', "words": [');
-      while (WI < Length(AResult.Words)) and (AResult.Words[WI].Segment < S) do
-        Inc(WI);
       First := True;
-      while (WI < Length(AResult.Words)) and (AResult.Words[WI].Segment = S) do
+      WI := FirstOf[S];
+      while WI >= 0 do
       begin
         if not First then
           SB.Append(',');
@@ -1083,7 +1113,7 @@ begin
           .Append(', "start": ').Append(TicksText(AResult.Words[WI].T0))
           .Append(', "end": ').Append(TicksText(AResult.Words[WI].T1))
           .Append(', "probability": ').Append(ProbabilityText(AResult.Words[WI].Probability)).Append('}');
-        Inc(WI);
+        WI := NextOf[WI];
       end;
       if not First then
         SB.Append(sLineBreak).Append('    ');

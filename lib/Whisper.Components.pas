@@ -278,6 +278,9 @@ type
     FPendingLock: TCriticalSection;
     { @true once Destroy started: messages are no longer delivered. }
     FClosing: Boolean;
+    { @true while DoDeactivate waits for a run: a handler called during the
+      wait cannot start another one on the model about to be freed. }
+    FDeactivating: Boolean;
     { @true while subscribed to the library log. }
     FLogHooked: Boolean;
     { @true from Cancel until the cancelled run ends: whisper.cpp's abort
@@ -891,13 +894,26 @@ end;
 procedure TCustomWhisper.DoDeactivate;
 var
   WasActive: Boolean;
+  W: TWhisperWorker;
 begin
   WasActive := FActive;
-  if FWorker <> nil then
-  begin
-    FWorker.Cancel;
-    FWorker.WaitFor;     // only queued (never synchronised) calls: no deadlock
-    FreeAndNil(FWorker);
+  FDeactivating := True;
+  try
+    // Take the worker out of FWorker BEFORE waiting. WaitFor on the main
+    // thread runs CheckSynchronize, which delivers the worker's last message
+    // (wmkComplete); DeliverMessage frees FWorker when it finds one, and
+    // that was this thread, under its own WaitFor. Now it finds none, logs,
+    // fires OnComplete (Cancelled) and the worker is freed here.
+    W := FWorker;
+    FWorker := nil;
+    if W <> nil then
+    begin
+      W.Cancel;
+      W.WaitFor;     // only queued (never synchronised) calls: no deadlock
+      W.Free;
+    end;
+  finally
+    FDeactivating := False;
   end;
   if FSyncRun <> nil then
     FSyncRun.Cancel;
@@ -967,6 +983,8 @@ var
 begin
   if not FActive then
     raise EWhisperError.Create('TWhisperAPI is not active: set ModelFile and Active first');
+  if FDeactivating then
+    raise EWhisperError.Create('TWhisperAPI is being deactivated: no new transcription');
   if Busy then
     raise EWhisperError.Create('A transcription or benchmark is already running');
   P := BuildRunParams;
@@ -1002,6 +1020,8 @@ var
 begin
   if not FActive then
     raise EWhisperError.Create('TWhisperAPI is not active: set ModelFile and Active first');
+  if FDeactivating then
+    raise EWhisperError.Create('TWhisperAPI is being deactivated: no new transcription');
   if Busy then
     raise EWhisperError.Create('A transcription or benchmark is already running');
   P := BuildRunParams;

@@ -268,8 +268,13 @@ type
     FModel: TWhisperModel;
     { The settings. }
     FParams: TWhisperParams;
-    { Set by Cancel; polled by the abort and encoder-begin callbacks. }
+    { Set by Cancel; polled by the abort and encoder-begin callbacks.
+      Cleared when a run ENDS, never when one starts: a Cancel that comes
+      before Execute (while the audio is read, or while waiting for the
+      model) stops that Execute. }
     FCancel: Boolean;
+    { The last Execute was cancelled (kept when FCancel is cleared). }
+    FWasCancelled: Boolean;
     { Segments collected so far. }
     FSegments: TWhisperSegmentArray;
     { Used length of FSegments. }
@@ -299,6 +304,8 @@ type
     procedure DoProgress(AProgress: Integer);
     { Records a handler exception and cancels the run. }
     procedure HandlerFailed(E: Exception);
+    { Getter of @link(Cancelled). }
+    function GetCancelled: Boolean;
   public
     { A run of AModel with AParams (neither is owned). }
     constructor Create(AModel: TWhisperModel; AParams: TWhisperParams);
@@ -327,12 +334,16 @@ type
     function FillGaps(const ASamples: TWhisperSamples; var AResult: TWhisperTranscription;
       AMinGapSeconds: Double = 3; AMinLevel: Single = 0.01; AMinVoiced: Single = 0.2): TWhisperGapArray;
     { Asks the run in progress to stop (any thread). It stops at the next
-      check; the segments so far are kept and the result says Cancelled. }
+      check; the segments so far are kept and the result says Cancelled.
+      Called before Execute (or between two Executes of a FillGaps), it
+      stops the next Execute at once, without calling whisper.cpp: a cancel
+      is never lost for coming early. }
     procedure Cancel;
     { @true while Execute runs. }
     property Running: Boolean read FRunning;
-    { @true after Cancel (reset by Execute). }
-    property Cancelled: Boolean read FCancel;
+    { @true after Cancel, and after an Execute that was cancelled (until
+      the next Execute ends). }
+    property Cancelled: Boolean read GetCancelled;
     { Fill TWhisperSegment.Tokens. }
     property IncludeTokens: Boolean read FIncludeTokens write FIncludeTokens;
     { Fill TWhisperTranscription.Words (@code(WhisperBuildWords)); also
@@ -409,7 +420,9 @@ type
     function Run(const ADevices: TWhisperDeviceArray): TWhisperBenchmarkArray;
     { Times one model on one device. }
     function RunOne(const AModelFile: string; const ADevice: TWhisperDevice): TWhisperBenchmarkResult;
-    { Stops after the run in progress (any thread). }
+    { Stops after the run in progress (any thread); before Run, Run then
+      times nothing. A cancelled benchmark stays cancelled: make a new one
+      to time again. }
     procedure Cancel;
     { Index of the fastest successful result; -1 when none succeeded.
       @param(AModelFile  '' = over every model (the fastest pair); a model
@@ -856,10 +869,11 @@ begin
     begin
       if First[S] < 0 then
         Continue;
-      // a segment wholly inside a loop
+      // a segment wholly inside a loop (after FillGaps put a stretch inside
+      // a segment, words of other segments lie between First and Last)
       Echo := True;
       for I := First[S] to Last[S] do
-        if not Loop[I] then
+        if (AResult.Words[I].Segment = S) and not Loop[I] then
         begin
           Echo := False;
           Break;
@@ -878,7 +892,8 @@ begin
         (AResult.Words[Last[S]].T1 - AResult.Words[First[S]].T0 >= 3 * WHISPER_TICKS_PER_SECOND);
       if Echo then
         for I := First[S] to Last[S] do
-          if PromptWords.IndexOf(PlainLetters(AResult.Words[I].Text)) < 0 then
+          if (AResult.Words[I].Segment = S) and
+            (PromptWords.IndexOf(PlainLetters(AResult.Words[I].Text)) < 0) then
           begin
             Echo := False;
             Break;
@@ -931,18 +946,29 @@ begin
   AResult.Words := Words;
   if AResult.WordTiming = wwtDtw then
   begin
-    S := -1;
+    // earliest start and latest end of each segment's words, wherever they
+    // are in Words (not "the first one seen after another segment": the
+    // words of a segment FillGaps put a stretch into are in two runs)
+    Loop := nil;
+    SetLength(Loop, Length(AResult.Segments));   // segment seen
     for I := 0 to High(AResult.Words) do
     begin
       K := AResult.Words[I].Segment;
       if (K < 0) or (K > High(AResult.Segments)) then
         Continue;
-      if K <> S then
+      if not Loop[K] then
       begin
         AResult.Segments[K].T0 := AResult.Words[I].T0;
-        S := K;
+        AResult.Segments[K].T1 := AResult.Words[I].T1;
+        Loop[K] := True;
+      end
+      else
+      begin
+        if AResult.Words[I].T0 < AResult.Segments[K].T0 then
+          AResult.Segments[K].T0 := AResult.Words[I].T0;
+        if AResult.Words[I].T1 > AResult.Segments[K].T1 then
+          AResult.Segments[K].T1 := AResult.Words[I].T1;
       end;
-      AResult.Segments[K].T1 := AResult.Words[I].T1;
     end;
   end;
 end;
@@ -1372,7 +1398,7 @@ begin
         end;
         SetLength(Result, Length(Result) + 1);
         Result[High(Result)] := Gap;
-        if FCancel then
+        if FCancel or FWasCancelled then
           Exit;
       end;
       if Added = 0 then
@@ -1387,6 +1413,11 @@ end;
 procedure TWhisperRun.Cancel;
 begin
   FCancel := True;
+end;
+
+function TWhisperRun.GetCancelled: Boolean;
+begin
+  Result := FCancel or FWasCancelled;
 end;
 
 procedure TWhisperRun.HandlerFailed(E: Exception);
@@ -1475,6 +1506,7 @@ var
   PromptTokens: Int32;
   I, K, SegFirst: Integer;
   PromptBuf: array of TWhisperToken;
+  Skipped: Boolean;
 begin
   if Length(ASamples) = 0 then
     raise EWhisperError.Create('No audio to transcribe');
@@ -1493,7 +1525,10 @@ begin
   FModel.Lock;
   try
     FRunning := True;
-    FCancel := False;
+    // FCancel is not cleared here (see the field): cancelled before it
+    // started, the run is skipped
+    FWasCancelled := False;
+    Skipped := FCancel;
     FHandlerError := '';
     FSegments := nil;
     FCount := 0;
@@ -1534,13 +1569,23 @@ begin
     P.abort_callback_user_data := Self;
 
     Start := Now;
-    Result.ResultCode := FModel.Lib.Full(Ctx, nil, P, @ASamples[0], Length(ASamples));
-    Result.ElapsedMs := MilliSecondsBetween(Now, Start);
-    try
-      CollectNew(Ctx);       // anything the callback did not report
-    except
-      on E: Exception do
-        HandlerFailed(E);
+    if Skipped then
+    begin
+      // whisper.cpp is not called, and the context still holds the segments
+      // of the run before: nothing is collected
+      Result.ResultCode := 0;
+      Result.ElapsedMs := 0;
+    end
+    else
+    begin
+      Result.ResultCode := FModel.Lib.Full(Ctx, nil, P, @ASamples[0], Length(ASamples));
+      Result.ElapsedMs := MilliSecondsBetween(Now, Start);
+      try
+        CollectNew(Ctx);       // anything the callback did not report
+      except
+        on E: Exception do
+          HandlerFailed(E);
+      end;
     end;
     if (Result.ResultCode = 0) and not FCancel then
       DoProgress(100);
@@ -1549,7 +1594,7 @@ begin
     Result.Cancelled := FCancel;
     Result.AudioSeconds := Length(ASamples) / WHISPER_SAMPLE_RATE;
     LangId := -1;
-    if Assigned(F.whisper_full_lang_id) then
+    if not Skipped and Assigned(F.whisper_full_lang_id) then
       LangId := F.whisper_full_lang_id(Ctx);
     if LangId >= 0 then
     begin
@@ -1589,6 +1634,8 @@ begin
       end;
     end;
   finally
+    FWasCancelled := FCancel;
+    FCancel := False;
     FRunning := False;
     FModel.Unlock;
   end;
@@ -1766,7 +1813,8 @@ var
   I, M, N: Integer;
 begin
   Result := nil;
-  FCancel := False;
+  // FCancel is not cleared: a Cancel before Run (while the audio was read)
+  // must stop it. A cancelled benchmark stays cancelled - make a new one.
   if Length(ADevices) = 0 then
     Devs := TWhisperLib.Instance.SelectableDevices
   else
