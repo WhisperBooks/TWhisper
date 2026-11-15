@@ -56,6 +56,13 @@ speed never picks the model on its own (accuracy).
   and the console use FFmpeg.API (TFFmpegLibrary) and FFmpeg.Media
   (TFFmpegMediaFile, TFFmpegAudioDecoder at WHISPER_SAMPLE_RATE mono)
   directly; AudioSet turns EFFmpegError into EWhisperError.
+- THE OWNER BUILDS IN THE 32-BIT IDE (2026-11-14 23:50: "I always build on
+  32 bit cos 64 doesn't have Mac etc" - Delphi 13's 64-bit IDE has no
+  macOS / Linux / Android targets). So the design packages must open on
+  Win32: the default-platform line of dclWhisperAPIFMX.dproj (and TFFMpegAPI's
+  dclFFmpegAPIFMX.dproj) is Win32; an IDE save from the 64-bit IDE flips it
+  to Win64 - set it back. Runtime packages are built for Win32 as well as
+  the targets.
 - GROUP ORDER (owner's tiers, 2026-11-14, commit 1cac2e7 "Package Order";
   the FFmpegAPI packages removed from the group 23:14): WhisperAPI,
   WhisperAPIFMX, dclWhisperAPIFMX, WhisperDemo, WhisperConsole - plain
@@ -154,7 +161,7 @@ speed never picks the model on its own (accuracy).
   even after a push. A corrected zip gets the NEXT number, never the old
   name; say which number it replaces. Every delivery says what it goes on
   top of: a zip number, or a commit when nothing is pending. Last number
-  used: 17. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
+  used: 18. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
   number in every zip that changes lib/ or the console (its first log
   line says which build made a log - owner was losing track, 20:26).
 - When the owner says a push is done: clone or fetch into a SEPARATE scratch
@@ -199,18 +206,14 @@ standard test because its EPUB text is known.
   real speech: lib/Whisper.Words (new unit), WordTimestamps on the
   component, IncludeWords on TWhisperRun, console --words / --labels /
   --json / --no-dtw, demo "Word timings" + save as Audacity labels / JSON.
-- Last push: 3001eb6 ("FFMpeg Sync", 2026-11-14 ~23:12; checked: the 6
-  files of zip 16 identical apart from line endings, the submodule moved
-  to TFFMpegAPI 54f7ab2; a fresh clone with it passes the checks and the
-  console builds and runs with FPC). Owner's Delphi run of FFmpegConsole
-  --check showed the Windows library-folder fix of FFmpegAPI-02 working.
-  Before it: 1cac2e7 = the owner's group order, 48a269b = zip 15,
-  c07b0cc = zip 14, 0aa0b87 = zips 11-13 - all checked. NOT YET PUSHED:
-  TWhisper-17-nosubmodule.zip on 3001eb6 (FFmpegAPI submodule dropped;
-  TFFMpegAPI an installed prerequisite; the group back to TWhisper's five
-  projects). With it the owner runs: git rm FFmpegAPI (removes the
-  submodule and its .gitmodules entry; delete .gitmodules if it is then
-  empty) and removes .git/modules/FFmpegAPI.
+- Last push: 290e4d3 ("Whisper Component back", 2026-11-14 ~23:40: IDE
+  re-save of WhisperConsole.dproj - platform blocks and DCC_UsePackage lists,
+  harmless). Before it 32feb69 = zip 17 (checked: 10 files identical apart
+  from line endings, .gitmodules and the FFmpegAPI submodule gone; checks
+  clean; console built with FPC against a separate TFFMpegAPI clone and ran).
+  TFFMpegAPI then at 05532ee (IDE re-save of its .dproj files, checked:
+  units, requires, platforms and Dcp output unchanged). NOT YET PUSHED:
+  TWhisper-18-win32.zip on 290e4d3 (dclWhisperAPIFMX opens on Win32 again).
 - redistributable_bin/ and *.dll are git-ignored ON PURPOSE (local copy of
   whisper-dev's dlls/; CUDA DLLs exceed GitHub's 100 MB limit). Ship
   binaries as a GitHub Release when needed.
