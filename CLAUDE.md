@@ -161,7 +161,7 @@ speed never picks the model on its own (accuracy).
   even after a push. A corrected zip gets the NEXT number, never the old
   name; say which number it replaces. Every delivery says what it goes on
   top of: a zip number, or a commit when nothing is pending. Last number
-  used: 18. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
+  used: 19. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
   number in every zip that changes lib/ or the console (its first log
   line says which build made a log - owner was losing track, 20:26).
 - When the owner says a push is done: clone or fetch into a SEPARATE scratch
@@ -173,7 +173,15 @@ speed never picks the model on its own (accuracy).
   - `python3 tools/verify_layout.py <whisper.cpp folder>` (`--write` after a
     whisper.cpp update; then also bump WHISPER_BINDING_VERSION and check
     the default values tested at the end of TWhisperLib.CheckLayout).
-- Say IN CAPITALS when a package rebuild is needed.
+- PACKAGE REBUILDS (owner, 2026-11-15: "Add rule"). Every delivery says
+  one or the other. When a package must be rebuilt, the message carries,
+  exactly, a blank line, the banner, a blank line, then the details:
+
+      =====> PACKAGE REBUILD NEEDED <=====
+
+  Details of the package rebuilds: which packages, in build order, why
+  (which unit changed), and what to rebuild after them (programs, other
+  repos' packages). Otherwise say "NO PACKAGE REBUILD", in capitals.
 
 ## Handover - READ THIS FIRST (latest: session 5, 2026-11-14 afternoon)
 
