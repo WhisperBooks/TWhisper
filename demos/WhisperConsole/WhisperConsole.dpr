@@ -138,7 +138,7 @@ const
   { The delivery this console comes from (zip number): printed first, so a
     log shows which build made it. Bumped with every zip that changes the
     library or the console. }
-  CONSOLE_DELIVERY = 28;
+  CONSOLE_DELIVERY = 30;
   { Learned habits listed by --align. }
   ALIGN_LEARNED_SHOWN = 20;
   { Marks an interpolated book word in the --align-labels file. }
@@ -202,12 +202,23 @@ begin
   Out := TStringList.Create;
   Files := WhisperPartFiles(AParts);
   try
+    // one file: its name; none known ('' - a JSON of one file names no
+    // audio) leaves the audio to EpubConsole's --audio / --book-audio
     if Files.Count = 0 then
-      Files.Add(ExpandFileName(ASingleFile));
+    begin
+      if ASingleFile <> '' then
+        Files.Add(ExpandFileName(ASingleFile))
+      else
+        Files.Add('');
+    end;
     Out.Add('# EPUB word timings from WhisperConsole: number start end audio (seconds in that file)');
     Out.Add('# for: EpubConsole <book.epub> --overlay THIS-FILE OUT.epub');
     for F := 0 to Files.Count - 1 do
-      Out.Add(Format('# audio %d: %s', [F + 1, Files[F]]));
+      if Files[F] <> '' then
+        Out.Add(Format('# audio %d: %s', [F + 1, Files[F]]))
+      else
+        Out.Add(Format('# audio %d not known (the JSON names no file): give EpubConsole --audio FILE or ' +
+          '--book-audio PATH', [F + 1]));
     // each word in the file it starts in (the shared library routine)
     Times := WhisperWordFileTimes(AJoined, AParts, Files);
     for I := 0 to High(Times) do
@@ -710,7 +721,9 @@ begin
           end;
         end;
         if AlignFile <> '' then
-          ReportAlignment(AlignFile, AlignIsWords, AlignLabels, TimingsFile, R, JsonParts, FromJson);
+          // a JSON of one file does not name it: not the JSON as audio (an
+          // --overlay without --audio copied the JSON into the book as audio)
+          ReportAlignment(AlignFile, AlignIsWords, AlignLabels, TimingsFile, R, JsonParts, '');
         ExitCode := 0;
         Exit;
       end;

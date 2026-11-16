@@ -168,6 +168,49 @@ end), shared helpers for the builder (WhisperWordFileTimes etc.).
   and FFmpeg 8.1.3 LGPL in TWhisper's redistributable_bin\Win64 (on
   PATH); model ggml-large-v3-turbo.bin.
 
+## Linux port (session 7, 2026-11-16) - TWhisper-30, on top of 9dfde0e
+Done in the cloud (Ubuntu 24.04 x86-64, gcc 13, 2 CPUs, no GPU):
+- whisper-dev at 11a38b9 (whisper.cpp 5922450 = 1.9.5-dev) built with
+  ./build.sh: CPU variants only (no nvcc / glslc / ROCm here). Found and
+  fixed in whisper-dev (its zip whisper-dev-01-linux-rpath): RUNPATH was
+  the build tree's absolute path -> $ORIGIN (@loader_path on macOS);
+  -ffile-prefix-map so no build-machine path is in the libraries;
+  libgomp.so.1 copied to dlls/ on Linux with gcc (every ggml-cpu variant
+  NEEDS it; Steam's runtime may lack it), found through $ORIGIN (ldd
+  checked). The three copies per library (.so, soname, full version) are
+  as designed.
+- FPC 3.0 (fpc-lambda; on this image also: ln -s
+  /lib64/ld-linux-x86-64.so.2 /lib/ld64.so.1, FPC 3.0 writes that
+  interpreter) built lib/ + WhisperConsole (TStringBuilder stand-in), and
+  TFFMpegAPI + EpubUnum lib/ + consoles: no errors.
+- WhisperConsole --check on the Linux libraries: layout check passed (111
+  values), CPU device listed, backends loaded from the program's folder.
+- A random-weight tiny.en model (header, filters and vocabulary of
+  whisper.cpp's for-tests-ggml-tiny.en.bin + 167 random f32 tensors)
+  transcribed 10 s of Moby-Dick (LibriVox): DTW words, second pass over
+  gaps, word-edge trimming, JSON - every path ran (5.1 s). With 60 s it ran
+  past 10 min (random weights decode to the limit at every temperature) -
+  use 10 s clips for such tests.
+- Pipeline: a transcript JSON made from the IDPF Moby-Dick sample's human
+  sync (3658 words, 1 in 50 dropped, 1 in 37 misspelt) -> --from-json
+  --align-words --timings: 3533 exact, 52 similar, 73 interpolated = all
+  3658 timed -> EpubConsole --overlay (Linux) -> epubcheck 5.2.1 0 / 0.
+- FIX (WhisperConsole, all platforms): --from-json of a transcript
+  without parts (one audio file: its JSON does not name the file) wrote
+  "# audio 1: <the JSON's path>" into --timings, and EpubConsole
+  --overlay without --audio then copied the JSON into the book AS AUDIO.
+  Now that line says the audio is not known ("# audio 1 not known ...:
+  give EpubConsole --audio FILE or --book-audio PATH"; EpubConsole skips
+  it and asks for audio). CONSOLE_DELIVERY 30.
+- glibc: libraries built on Ubuntu 24.04 need GLIBC_2.38 (ggml) /
+  GLIBCXX_3.4.29. SteamOS is newer; Steam Linux Runtime 3.0 (sniper)
+  uses the host's glibc when newer, so they load there. For other
+  distributions, build on the oldest system to support (or in the
+  sniper SDK container: registry.gitlab.steamos.cloud/steamrt/sniper/sdk).
+NOT done here (needs the owner's Linux box): GPU backends (Vulkan / HIP /
+CUDA), Delphi Linux64 builds (WhisperConsole, WhisperDemo, EpubBuilder,
+EpubReader through PAServer), real speech with a real model, sound.
+
 ## Project
 Pascal binding of whisper.cpp (checked against whisper.h 1.9.5), loaded
 DYNAMICALLY at run time (owner, 2026-11-13: "must use dynamic loading of
@@ -325,7 +368,7 @@ speed never picks the model on its own (accuracy).
   even after a push. A corrected zip gets the NEXT number, never the old
   name; say which number it replaces. Every delivery says what it goes on
   top of: a zip number, or a commit when nothing is pending. Last number
-  used: 29. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
+  used: 30. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
   number in every zip that changes lib/ or the console (its first log
   line says which build made a log - owner was losing track, 20:26).
 - When the owner says a push is done: clone or fetch into a SEPARATE scratch
