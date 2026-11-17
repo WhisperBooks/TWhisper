@@ -471,6 +471,13 @@ WhisperConsole ggml-large-v3-turbo.bin book.wav --labels words.txt --json words.
   It also compares the library's default params with whisper.h's documented
   values, which catches a DLL built from a different header.
   `TWhisperAPI.CheckLayout` (default on) refuses a library that fails.
+  So does every `TWhisperModel`: it calls `TWhisperLib.RequireLayout`
+  before it loads (the check runs once, its answer is kept), so a program
+  that uses the classes without the component - WhisperConsole,
+  EpubBuilder - cannot hand a wrongly laid out record to `whisper_full`
+  either. `TWhisperLib.Instance.EnforceLayout := False` turns that off
+  for the whole library (to try a newer whisper.cpp knowingly); the
+  component sets it from its `CheckLayout` property when it activates.
 - **Structs passed by value.** `whisper_full` and
   `whisper_init_from_file_with_params` take their params struct by value.
   clang shows the lowering:

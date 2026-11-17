@@ -138,7 +138,7 @@ const
   { The delivery this console comes from (zip number): printed first, so a
     log shows which build made it. Bumped with every zip that changes the
     library or the console. }
-  CONSOLE_DELIVERY = 30;
+  CONSOLE_DELIVERY = 31;
   { Learned habits listed by --align. }
   ALIGN_LEARNED_SHOWN = 20;
   { Marks an interpolated book word in the --align-labels file. }
@@ -436,6 +436,18 @@ begin
   end;
 end;
 
+{ A number given on the command line: always with '.' as the decimal
+  separator, whatever the system's is ('12.5' raised where it is a comma).
+  @raises(EConvertError when AText is not a number.) }
+function ArgFloat(const AText: string): Double;
+var
+  FS: TFormatSettings;
+begin
+  FS := FormatSettings;
+  FS.DecimalSeparator := '.';
+  Result := StrToFloat(AText, FS);
+end;
+
 { True when AFileName is read without FFmpeg. }
 function IsWav(const AFileName: string): Boolean;
 begin
@@ -602,12 +614,12 @@ begin
           if SameText(ParamStr(I), 'all') then
             BenchSeconds := 0
           else
-            BenchSeconds := StrToFloat(ParamStr(I));
+            BenchSeconds := ArgFloat(ParamStr(I));
           Inc(I);
         end
         else if (Arg = '--bench-start') and (I <= ParamCount) then
         begin
-          BenchStart := StrToFloat(ParamStr(I));
+          BenchStart := ArgFloat(ParamStr(I));
           Inc(I);
         end
         else if (Arg = '--devices') and (I <= ParamCount) then

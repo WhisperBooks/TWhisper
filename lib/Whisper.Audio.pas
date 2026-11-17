@@ -97,6 +97,8 @@ const
   RESAMPLE_PHASES = 1024;
   { Bytes of WAV data decoded at a time. }
   WAV_BLOCK_BYTES = 1024 * 1024;
+  { Most channels a WAV may claim (a damaged header claims thousands). }
+  WAV_MAX_CHANNELS = 256;
 
 function ReadTag(AStream: TStream): AnsiString;
 begin
@@ -177,7 +179,11 @@ var
   Tag: AnsiString;
   ChunkSize: UInt32;
   DataSize, Ds64DataSize, Remaining: Int64;
-  FormatTag, BlockAlign: UInt16;
+  FormatTag: UInt16;
+  // not UInt16: bytes per sample x channels did not fit for a header
+  // claiming thousands of channels, and each frame was then decoded from
+  // more bytes than the block buffer holds
+  BlockAlign: Integer;
   HaveFmt, HaveData, Rf64: Boolean;
   ExtSize: UInt16;
   SubFormat: UInt16;
@@ -272,7 +278,7 @@ begin
     raise EWhisperError.CreateFmt('Unsupported WAV encoding (format tag %d): only PCM and IEEE float ' +
       'are read - convert the file first', [FormatTag]);
   end;
-  if (AInfo.Channels <= 0) or (AInfo.SampleRate <= 0) then
+  if (AInfo.Channels <= 0) or (AInfo.Channels > WAV_MAX_CHANNELS) or (AInfo.SampleRate <= 0) then
     raise EWhisperError.CreateFmt('Invalid WAV format: %d channel(s), %d Hz',
       [AInfo.Channels, AInfo.SampleRate]);
   if ((AInfo.Encoding = wweInteger) and not (AInfo.BitsPerSample in [8, 16, 24, 32])) or
@@ -329,6 +335,10 @@ begin
     except
       on E: EWhisperError do
         raise EWhisperError.CreateFmt('%s: %s', [AFileName, E.Message]);
+      // a header or data cut short: say which file, not "Stream read error"
+      on E: EStreamError do
+        raise EWhisperError.CreateFmt('%s: the WAV file ends early or cannot be read (%s)', [AFileName,
+          E.Message]);
     end;
   finally
     S.Free;

@@ -834,6 +834,9 @@ begin
       Log(wllInfo, Lib.LoadLog[I]);
     Log(wllInfo, Format('whisper.cpp %s from %s', [Lib.Version, Lib.FileName]));
     Log(wllInfo, 'System info: ' + Lib.SystemInfo);
+    // CheckLayout off: the models' own check (TWhisperLib.RequireLayout)
+    // is off too - for the whole library, as there is one library
+    Lib.EnforceLayout := FCheckLayout;
     if FCheckLayout then
     begin
       Report := TStringList.Create;
@@ -896,6 +899,14 @@ var
   WasActive: Boolean;
   W: TWhisperWorker;
 begin
+  // Inside a handler of a synchronous Transcribe the model is in use by
+  // whisper_full further up this thread's stack (the model's lock is
+  // re-entrant on one thread, so it does not stop this): freeing it there
+  // ends the program. Refused; when the component itself is being
+  // destroyed there is nobody to refuse to.
+  if (FSyncRun <> nil) and not (csDestroying in ComponentState) then
+    raise EWhisperError.Create('Active cannot be set to False inside an event of a synchronous Transcribe: ' +
+      'call Cancel there, and deactivate when Transcribe has returned');
   WasActive := FActive;
   FDeactivating := True;
   try

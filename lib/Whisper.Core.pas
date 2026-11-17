@@ -1327,6 +1327,8 @@ end;
 procedure TWhisperModel.Init;
 begin
   FLib := TWhisperLib.Instance;
+  // no model from a library whose records do not match the binding
+  FLib.RequireLayout;
   FLock := TCriticalSection.Create;
   FLib.ModelCreated;
   FCounted := True;
@@ -1477,6 +1479,9 @@ const
   MAX_ROUNDS = 3;
   { Temperature of the retry of a stretch that gave nothing usable. }
   RETRY_TEMPERATURE = 0.2;
+  { Letters (and digits) a segment needs to count as the prompt given
+    back when its text is part of the prompt: about three words. }
+  ECHO_MIN_LETTERS = 12;
 var
   Edges: array of Int64;   // pairs: end of an item, start of the next
   N, I, K, F, Frames, Loud, S0, S1, G, Round_, Added: Integer;
@@ -1507,7 +1512,12 @@ var
     for J := 0 to High(APart.Segments) do
     begin
       Txt := PlainLetters(APart.Segments[J].Text);
-      if (Txt = '') or ((Prompt <> '') and (Pos(Txt, Prompt) > 0)) then
+      // the prompt given back: a segment that is a stretch of the prompt
+      // of ECHO_MIN_LETTERS letters or more. Shorter ones are speech: the
+      // letters of "It was", "Sie" or "eine" are inside the book prompts
+      // too, and such short utterances are what a gap holds (they were
+      // all dropped as echoes - review, zip 31).
+      if (Txt = '') or ((Prompt <> '') and (Length(Txt) >= ECHO_MIN_LETTERS) and (Pos(Txt, Prompt) > 0)) then
         Continue;
       SetLength(Result.Segments, Length(Result.Segments) + 1);
       Result.Segments[High(Result.Segments)] := APart.Segments[J];

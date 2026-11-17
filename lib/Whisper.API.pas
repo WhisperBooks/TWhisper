@@ -416,6 +416,14 @@ type
     { @true while Load runs: log lines (ggml reporting the backends it
       loads or skips) go to LoadLog instead of stderr. }
     FCapturing: Boolean;
+    { Backing field of @link(EnforceLayout). }
+    FEnforceLayout: Boolean;
+    { @true once RequireLayout has run CheckLayout (its answer is kept). }
+    FLayoutChecked: Boolean;
+    { What that CheckLayout answered. }
+    FLayoutOk: Boolean;
+    { Its report (the lines that failed and the summary). }
+    FLayoutReport: string;
     { Creates the object; Load does the work. ADummy only makes the
       signature differ from @link(Create)'s: C++Builder cannot tell two
       parameterless constructors apart (W1029). }
@@ -487,6 +495,19 @@ type
         line; may be @nil.)
       @returns(@true when everything matches.) }
     function CheckLayout(AReport: TStrings): Boolean;
+    { Refuses a library whose records do not match the binding: runs
+      @link(CheckLayout) once (the answer is kept) and raises with its
+      report when it failed. Every @code(TWhisperModel) calls it before it
+      loads, so a program that uses the classes directly - no component,
+      no @code(--check) - cannot pass a wrongly laid out params record to
+      whisper_full. Does nothing while @link(EnforceLayout) is @false.
+      @raises(EWhisperError when the layout check failed.) }
+    procedure RequireLayout;
+    { @true (default): no model loads from a library that fails the layout
+      check (@link(RequireLayout)). @false turns that off for the whole
+      library - for trying a newer whisper.cpp knowingly; the component
+      sets it from its CheckLayout property when it activates. }
+    property EnforceLayout: Boolean read FEnforceLayout write FEnforceLayout;
 
     { Library version, e.g. '1.9.5'. }
     function Version: string;
@@ -722,6 +743,7 @@ begin
   FLogLock := TCriticalSection.Create;
   FLoadLog := TStringList.Create;
   FGgmlMissing := TStringList.Create;
+  FEnforceLayout := True;
 end;
 
 destructor TWhisperLib.Destroy;
@@ -1636,12 +1658,47 @@ end;
 
 procedure TWhisperLib.ModelCreated;
 begin
-  Inc(FModelCount);
+  // models are made and freed on worker threads too
+  {$ifdef FPC}
+  InterlockedIncrement(FModelCount);
+  {$else}
+  AtomicIncrement(FModelCount);
+  {$endif}
 end;
 
 procedure TWhisperLib.ModelFreed;
 begin
-  Dec(FModelCount);
+  {$ifdef FPC}
+  InterlockedDecrement(FModelCount);
+  {$else}
+  AtomicDecrement(FModelCount);
+  {$endif}
+end;
+
+procedure TWhisperLib.RequireLayout;
+var
+  Report: TStringList;
+begin
+  if not FEnforceLayout then
+    Exit;
+  FLogLock.Acquire;
+  try
+    if not FLayoutChecked then
+    begin
+      Report := TStringList.Create;
+      try
+        FLayoutOk := CheckLayout(Report);
+        FLayoutReport := Trim(Report.Text);
+      finally
+        Report.Free;
+      end;
+      FLayoutChecked := True;
+    end;
+  finally
+    FLogLock.Release;
+  end;
+  if not FLayoutOk then
+    raise EWhisperError.Create(FLayoutReport);
 end;
 
 function TWhisperLib.CheckLayout(AReport: TStrings): Boolean;
@@ -1878,6 +1935,11 @@ end;
 initialization
 
 finalization
-  FreeAndNil(GWhisperLib);
+  // A model still alive (a component or object freed after this unit's
+  // finalization) calls whisper_free through the library object: with
+  // one left, the object and the library stay as they are - the process
+  // is ending and the system unloads them.
+  if (GWhisperLib <> nil) and (GWhisperLib.FModelCount = 0) then
+    FreeAndNil(GWhisperLib);
 
 end.

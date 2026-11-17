@@ -13,6 +13,11 @@ same text is in TWhisper's and Epubunum's CLAUDE.md).
 
 ### Repositories and where they stand
 
+(The table below is session 6's. Current, 2026-11-16: TWhisper d669a06 =
+TWhisper-30, last number used 31 - the review fixes further down;
+Epubunum's CLAUDE.md has session 7's handover and table, whisper-dev has
+a CLAUDE.md of its own from whisper-dev-21.)
+
 | Repo | Pushed | = zip | Last zip number used |
 |---|---|---|---|
 | WhisperBooks/TWhisper | 59cc978 | TWhisper-28 | 28 |
@@ -211,6 +216,66 @@ NOT done here (needs the owner's Linux box): GPU backends (Vulkan / HIP /
 CUDA), Delphi Linux64 builds (WhisperConsole, WhisperDemo, EpubBuilder,
 EpubReader through PAServer), real speech with a real model, sound.
 
+## Review fixes (TWhisper-31, on top of d669a06 = zip 30)
+A code review by reading of d669a06 (owner, 2026-11-16: "Same for
+TWhisper", then "y + claude"). Read closely: Whisper.DynLib, API, Core,
+Components, Audio, AudioSet, the aligner's AlignGap / PairTokens, the
+model header reader, the console's arguments. NOT read: the rest of
+Whisper.Align, WhisperBuildWords, the clean / insert routines,
+WhisperDemo, the FMX units, the tools. NOT COMPILED (no Delphi, no FPC in
+that session); pasdoc_check, project_check 0 problems; verify_layout.py
+against whisper.cpp 5922450: 0 errors (no record changed).
+1. TWhisperLib.RequireLayout / EnforceLayout (Whisper.API), called by
+   TWhisperModel.Init (Whisper.Core): CheckLayout ran only in the
+   component's DoActivate and in WhisperConsole --check, so a program
+   using TWhisperModel / TWhisperRun directly (EpubBuilder) passed its
+   params record to whatever whisper.cpp was in the folder. Now every
+   model checks once (answer kept, under the log lock) and raises with
+   the report. The component sets Lib.EnforceLayout from its CheckLayout
+   property when it activates (off = off for the whole library).
+2. Whisper.Core, FillGaps / RunStretch: a gap segment counted as "the
+   prompt given back" when its letters were ANY substring of the
+   prompt's - "It was", "Sie", "eine" are inside the book prompts, and
+   short utterances are what gaps hold; the retry without the prompt
+   used the same test. Now only from ECHO_MIN_LETTERS (12) letters.
+   TO TEST: --from-json cannot show it (the gaps are in the JSON
+   already): transcribe a book again and compare "not heard" and the
+   gap lines; moby.json's 209652 exact must not fall.
+3. Whisper.API finalization: the library object and the library are NOT
+   freed while a model is alive (it would call whisper_free through a
+   freed TWhisperLib) - left to the system. ModelCreated / ModelFreed
+   count atomically (EpubBuilder makes its model on a thread).
+4. Whisper.Components, DoDeactivate: Active := False inside an event of
+   a SYNCHRONOUS Transcribe raises EWhisperError (it freed the model
+   under whisper_full; the model's lock is re-entrant on one thread).
+   Not when the component is being destroyed (nobody to refuse to -
+   still fatal there: do not free the component in such an event).
+5. Whisper.Audio: BlockAlign is an Integer (as UInt16, bytes x channels
+   wrapped for a header claiming thousands of channels and frames were
+   decoded past the block buffer); more than WAV_MAX_CHANNELS (256)
+   channels is refused; a file cut short raises EWhisperError with the
+   file's name (was EReadError "Stream read error").
+6. WhisperConsole: --seconds and --bench-start read with '.' whatever
+   the system's decimal separator is (ArgFloat). CONSOLE_DELIVERY 31.
+FOUND AND NOT FIXED (owner to decide):
+- TWhisperBenchmark.Cancel reads FCurrentRun while RunOne frees it
+  (from the zip 20 review; EpubBuilder's TBuildThread.Cancel has the
+  same shape with FRun).
+- LoadBackends resets the host's SetDllDirectory; with no library next
+  to the program the bare name is looked for in the current directory
+  too (Windows).
+- AlignGap leaves a gap of more than MAX_GAP_CELLS unpaired without a
+  word: check that the figures show it (no anchors at all = the whole
+  book is such a gap). It joins two strings per cell for the 'on to' =
+  'onto' tests: compare lengths first.
+- TWhisperAudioSet.Read reads a .wav itself even when FFmpeg is loaded:
+  a non-PCM WAV fails where FFmpeg would decode it.
+- The JSON reader recurses without a depth limit (own files only).
+- TWhisperLib.Load is not safe for two threads calling it first at once.
+- A log listener can be in a call on a ggml thread while
+  RemoveLogListener and the component's destructor run.
+- Timing uses Now, not a stopwatch. No LICENSE file (public repository).
+
 ## Project
 Pascal binding of whisper.cpp (checked against whisper.h 1.9.5), loaded
 DYNAMICALLY at run time (owner, 2026-11-13: "must use dynamic loading of
@@ -368,7 +433,7 @@ speed never picks the model on its own (accuracy).
   even after a push. A corrected zip gets the NEXT number, never the old
   name; say which number it replaces. Every delivery says what it goes on
   top of: a zip number, or a commit when nothing is pending. Last number
-  used: 30. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
+  used: 31. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
   number in every zip that changes lib/ or the console (its first log
   line says which build made a log - owner was losing track, 20:26).
 - When the owner says a push is done: clone or fetch into a SEPARATE scratch
