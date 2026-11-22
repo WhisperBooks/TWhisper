@@ -216,6 +216,27 @@ NOT done here (needs the owner's Linux box): GPU backends (Vulkan / HIP /
 CUDA), Delphi Linux64 builds (WhisperConsole, WhisperDemo, EpubBuilder,
 EpubReader through PAServer), real speech with a real model, sound.
 
+## Benchmark progress (TWhisper-32, on top of 2f98152 = TWhisper-31)
+Owner 2026-11-22 15:49 (in Epubunum's session): "When calibrating three
+runs are typically done. This means the progress bar goes 0, 33, 66,
+100. If calibrating a very slow machine it can look like it's stuck. Can
+we get some callbacks while calibrating so the calibration is more
+granular?" (the three steps are EpubBuilder's devices: one pair each).
+NOT COMPILED (no Delphi, no FPC here; pasdoc_check, project_check: 0
+problems). Files: lib/Whisper.Core.pas,
+demos/WhisperConsole/WhisperConsole.dpr (CONSOLE_DELIVERY 32), CLAUDE.md.
+- TWhisperBenchmark.OnProgress (TWhisperBenchmarkProgressEvent: Sender,
+  APhase: TWhisperBenchmarkPhase = wbpLoading / wbpWarmup / wbpTiming,
+  APercent 0 .. 100 of the pair), from Run and RunOne, on the calling
+  thread. An estimate: loading 0 - 10, warm-up 10 - 20, the timed runs
+  share 20 - 100 equally, each moved by its TWhisperRun.OnProgress
+  (whisper.cpp reports at the start of every 30 s window: a 120 s stretch
+  gives about four steps per run). 100 when the pair is Ok. No
+  duplicates (FLastPhase / FLastPercent, reset per pair).
+- Private: FPhase, FPhaseFrom, FPhaseSpan, StartPhase, Report,
+  RunProgress; RunOne's LOAD_SHARE / WARMUP_SHARE.
+- Not forwarded by TCustomWhisper.BenchmarkDevicesAsync (not asked).
+
 ## Review fixes (TWhisper-31, on top of d669a06 = zip 30)
 A code review by reading of d669a06 (owner, 2026-11-16: "Same for
 TWhisper", then "y + claude"). Read closely: Whisper.DynLib, API, Core,
@@ -433,7 +454,7 @@ speed never picks the model on its own (accuracy).
   even after a push. A corrected zip gets the NEXT number, never the old
   name; say which number it replaces. Every delivery says what it goes on
   top of: a zip number, or a commit when nothing is pending. Last number
-  used: 31. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
+  used: 32. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
   number in every zip that changes lib/ or the console (its first log
   line says which build made a log - owner was losing track, 20:26).
 - When the owner says a push is done: clone or fetch into a SEPARATE scratch

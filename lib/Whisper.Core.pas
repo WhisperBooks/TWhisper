@@ -367,6 +367,20 @@ type
     const ADevice: TWhisperDevice) of object;
   { A device has been timed. }
   TWhisperBenchmarkEvent = procedure(Sender: TObject; const AResult: TWhisperBenchmarkResult) of object;
+  { What a model / device pair of a benchmark is doing. }
+  TWhisperBenchmarkPhase = (
+    { The model is being loaded onto the device. }
+    wbpLoading,
+    { The warm-up run. }
+    wbpWarmup,
+    { A timed run. }
+    wbpTiming);
+  { Progress of the model / device pair being timed: APhase, and APercent
+    (0 .. 100) of the whole pair - an estimate: loading takes the first
+    10, the warm-up the next 10, the timed runs the rest in equal parts,
+    each as whisper.cpp reports it (at the start of every 30 s window). }
+  TWhisperBenchmarkProgressEvent = procedure(Sender: TObject; APhase: TWhisperBenchmarkPhase;
+    APercent: Integer) of object;
 
   { Times transcription with one or more models on several devices, to find
     the fastest device (per model, or the fastest model / device pair) on
@@ -409,6 +423,25 @@ type
     FOnStart: TWhisperBenchmarkStartEvent;
     { Backing field of @link(OnResult). }
     FOnResult: TWhisperBenchmarkEvent;
+    { Backing field of @link(OnProgress). }
+    FOnProgress: TWhisperBenchmarkProgressEvent;
+    { The phase of the pair being timed. }
+    FPhase: TWhisperBenchmarkPhase;
+    { Where the phase starts in the pair's progress, %. }
+    FPhaseFrom: Double;
+    { The phase's share of the pair's progress, %. }
+    FPhaseSpan: Double;
+    { The phase last reported (no duplicates). }
+    FLastPhase: TWhisperBenchmarkPhase;
+    { The percentage last reported (-1 = none yet for this pair). }
+    FLastPercent: Integer;
+    { Starts phase APhase at AFrom % of the pair, ASpan % long, and reports
+      it. }
+    procedure StartPhase(APhase: TWhisperBenchmarkPhase; AFrom, ASpan: Double);
+    { Reports APercent of the pair in the current phase (no duplicates). }
+    procedure Report(APercent: Double);
+    { The run's progress (TWhisperRun.OnProgress) as the pair's. }
+    procedure RunProgress(Sender: TObject; AProgress: Integer);
     { ASeconds of the audio from StartSeconds (all of it for 0 or less);
       chooses the stretch first when StartSeconds is -1. }
     function Slice(ASeconds: Double): TWhisperSamples;
@@ -478,6 +511,10 @@ type
     property OnStart: TWhisperBenchmarkStartEvent read FOnStart write FOnStart;
     { After each model / device pair (on the calling thread). }
     property OnResult: TWhisperBenchmarkEvent read FOnResult write FOnResult;
+    { While a model / device pair is timed (Run and RunOne; on the calling
+      thread): its phase and how far it is, so a slow machine does not look
+      stuck between OnStart and OnResult. The handler should not raise. }
+    property OnProgress: TWhisperBenchmarkProgressEvent read FOnProgress write FOnProgress;
   end;
 
 { Text of a whisper_full result code. }
@@ -1922,6 +1959,37 @@ begin
     R.Cancel;
 end;
 
+procedure TWhisperBenchmark.StartPhase(APhase: TWhisperBenchmarkPhase; AFrom, ASpan: Double);
+begin
+  FPhase := APhase;
+  FPhaseFrom := AFrom;
+  FPhaseSpan := ASpan;
+  Report(AFrom);
+end;
+
+procedure TWhisperBenchmark.Report(APercent: Double);
+var
+  P: Integer;
+begin
+  P := Round(APercent);
+  if P > 100 then
+    P := 100
+  else if P < 0 then
+    P := 0;
+  if (P = FLastPercent) and (FPhase = FLastPhase) then
+    Exit;
+  FLastPercent := P;
+  FLastPhase := FPhase;
+  if Assigned(FOnProgress) then
+    FOnProgress(Self, FPhase, P);
+end;
+
+procedure TWhisperBenchmark.RunProgress(Sender: TObject; AProgress: Integer);
+begin
+  // TWhisperRun keeps AProgress within 0 .. 100
+  Report(FPhaseFrom + FPhaseSpan * AProgress / 100);
+end;
+
 procedure TWhisperBenchmark.ChooseStretch;
 var
   Share: Double;
@@ -1982,6 +2050,11 @@ end;
 
 function TWhisperBenchmark.RunOne(const AModelFile: string;
   const ADevice: TWhisperDevice): TWhisperBenchmarkResult;
+const
+  { The pair's progress (OnProgress) taken by loading, %. }
+  LOAD_SHARE = 10;
+  { Taken by the warm-up, %; the timed runs share the rest. }
+  WARMUP_SHARE = 10;
 var
   CP: TWhisperContextParams;
   Model: TWhisperModel;
@@ -2021,8 +2094,10 @@ begin
   Model := nil;
   P := nil;
   R := nil;
+  FLastPercent := -1;
   try
     try
+      StartPhase(wbpLoading, 0, LOAD_SHARE);
       Start := Now;
       Model := TWhisperModel.Create(AModelFile, CP);
       Result.LoadMs := MilliSecondsBetween(Now, Start);
@@ -2038,9 +2113,11 @@ begin
       end;
       Result.Threads := P.Threads;
       R := TWhisperRun.Create(Model, P);
+      R.OnProgress := RunProgress;
       FCurrentRun := R;
       if FCancel then
         Exit;
+      StartPhase(wbpWarmup, LOAD_SHARE, WARMUP_SHARE);
       T := R.Execute(Slice(FWarmupSeconds));
       Result.WarmupMs := T.ElapsedMs;
       if T.ErrorMessage <> '' then
@@ -2051,6 +2128,8 @@ begin
       SetLength(Times, Max(1, FRuns));
       for I := 0 to High(Times) do
       begin
+        StartPhase(wbpTiming, LOAD_SHARE + WARMUP_SHARE + I * (100 - LOAD_SHARE - WARMUP_SHARE) / Length(Times),
+          (100 - LOAD_SHARE - WARMUP_SHARE) / Length(Times));
         T := R.Execute(Timed);
         if T.ErrorMessage <> '' then
           raise EWhisperError.Create('Timed run failed: ' + T.ErrorMessage);
@@ -2078,6 +2157,7 @@ begin
       Result.Speed := Result.AudioSeconds * 1000 / Max(Int64(1), Result.RunMs);
       Result.Text := Trim(WhisperSegmentsToText(T.Segments));
       Result.Ok := True;
+      Report(100);
     except
       on E: Exception do
         Result.ErrorMessage := E.Message;

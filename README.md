@@ -186,6 +186,11 @@ second) and the text, for every model x device pair. `Best` gives the
 fastest pair, or the fastest device for one model. Store the winner in
 `Device` (the demo saves it in its settings).
 
+**While it runs:** `OnStart` and `OnResult` come before and after each
+pair; `OnProgress` in between gives the phase (loading, warm-up, timing)
+and an estimated percentage of the pair, so a slow machine doesn't look
+stuck.
+
 Speed alone doesn't pick a *model*, because bigger models are more accurate.
 With several models timed, the demo keeps the selected model, uses its
 fastest device, and shows the fastest pair overall.
