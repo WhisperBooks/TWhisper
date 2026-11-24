@@ -10,7 +10,7 @@ It follows the structure and source rules of
 - runtime and design-time packages
 - a GUI demo and a console demo
 
-Binding checked against whisper.h **1.9.5** (`WHISPER_BINDING_VERSION`).
+Binding checked against whisper.h **1.9.6** (`WHISPER_BINDING_VERSION`).
 
 ## Dynamic loading
 
@@ -27,7 +27,7 @@ Where the library is looked for, in order:
 | Platform | Library | Loaded first, from the same folder |
 |---|---|---|
 | Windows | `whisper.dll` (MinGW: `libwhisper.dll`) | `ggml-base.dll`, `ggml.dll` |
-| Linux / Android | `libwhisper.so`, `libwhisper.so.1` | `libggml-base.so`, `libggml.so` (or `.so.0`) |
+| Linux / Android | `libwhisper.so`, `libwhisper.so.1` | `libggml-base.so`, `libggml.so` (or `.so.1`; `.so.0` up to whisper.cpp 1.9.5)  |
 | macOS | `libwhisper.dylib`, `libwhisper.1.dylib` | the same, `.dylib` |
 
 `ggml-base` and `ggml` are preloaded by full path, so whisper's

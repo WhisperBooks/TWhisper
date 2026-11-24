@@ -216,6 +216,29 @@ NOT done here (needs the owner's Linux box): GPU backends (Vulkan / HIP /
 CUDA), Delphi Linux64 builds (WhisperConsole, WhisperDemo, EpubBuilder,
 EpubReader through PAServer), real speech with a real model, sound.
 
+## whisper.cpp 1.9.6 (TWhisper-33, on top of 34cbd98 = TWhisper-32)
+Owner 2026-11-24 (Epubunum's session 15): "whisper 1.9.6 just came
+out"; 34cbd98 carries the tag 1.9.5 (as whisper-dev's 2071815 does) -
+main goes on with 1.9.6. NOT COMPILED (no Delphi here). Files:
+lib/Whisper.API.pas, lib/Whisper.Types.pas,
+demos/WhisperConsole/WhisperConsole.dpr, README.md, CLAUDE.md.
+- READ, whisper.cpp 5922450 (1.9.5-dev, what was shipped) .. v1.9.6
+  (96ec4d9): include/whisper.h NOT ONE LINE; ggml-backend.h none;
+  src/whisper.cpp 5 lines (a log format, a hidden symbol) - the rest
+  is ggml (0.29 -> 1.0.0). tools/verify_layout.py on v1.9.6: 0
+  errors, Whisper.Layout.inc the same (--write changed line ends
+  only; not delivered). The defaults CheckLayout tests: unchanged
+  (whisper.cpp's source is).
+- WHISPER_BINDING_VERSION = '1.9.6'; CONSOLE_DELIVERY = 33.
+- GGML'S FILE NUMBER IS 1 (libggml.so.1, libggml-base.so.1,
+  libggml.1.dylib ...; was 0): PlatformFileNames takes a second,
+  older number - the ggml libraries are looked for as lib<x>.so, .so.1,
+  then .so.0 (an older build beside the program still loads).
+  libggml.so, the first name, is in whisper-dev's dlls as before, so
+  this is the fallback only.
+- TIMINGS MAY DIFFER (all of ggml's backends changed): Epubunum keeps
+  every time with the library's version (its zips 293 - 299).
+
 ## Benchmark progress (TWhisper-32, on top of 2f98152 = TWhisper-31)
 Owner 2026-11-22 15:49 (in Epubunum's session): "When calibrating three
 runs are typically done. This means the progress bar goes 0, 33, 66,
@@ -454,7 +477,7 @@ speed never picks the model on its own (accuracy).
   even after a push. A corrected zip gets the NEXT number, never the old
   name; say which number it replaces. Every delivery says what it goes on
   top of: a zip number, or a commit when nothing is pending. Last number
-  used: 32. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
+  used: 33. Bump CONSOLE_DELIVERY in WhisperConsole.dpr to the zip's
   number in every zip that changes lib/ or the console (its first log
   line says which build made a log - owner was losing track, 20:26).
 - When the owner says a push is done: clone or fetch into a SEPARATE scratch

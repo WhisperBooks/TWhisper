@@ -622,8 +622,11 @@ var
   { The loaded library (nil when not loaded). }
   GWhisperLib: TWhisperLib = nil;
 
-{ File names of a library stem on this platform, most specific first. }
-function PlatformFileNames(const AStem, AVersion: string): TStringList;
+{ File names of a library stem on this platform, most specific first.
+  AVersion: the library's version number in its file name ('' = none),
+  AOlder: an earlier one, tried after it ('' = none) - ggml's is 1 from
+  ggml 1.0 (whisper.cpp 1.9.6) and was 0 before. }
+function PlatformFileNames(const AStem, AVersion: string; const AOlder: string = ''): TStringList;
 begin
   Result := TStringList.Create;
   {$if defined(MSWINDOWS)}
@@ -633,10 +636,14 @@ begin
   Result.Add('lib' + AStem + '.dylib');
   if AVersion <> '' then
     Result.Add('lib' + AStem + '.' + AVersion + '.dylib');
+  if AOlder <> '' then
+    Result.Add('lib' + AStem + '.' + AOlder + '.dylib');
   {$else}
   Result.Add('lib' + AStem + '.so');
   if AVersion <> '' then
     Result.Add('lib' + AStem + '.so.' + AVersion);
+  if AOlder <> '' then
+    Result.Add('lib' + AStem + '.so.' + AOlder);
   {$endif}
 end;
 
@@ -780,7 +787,7 @@ var
   Dep: TWhisperDynLib;
 begin
   Result := False;
-  Names := PlatformFileNames(AStem, '0');
+  Names := PlatformFileNames(AStem, '1', '0');
   try
     for J := 0 to Names.Count - 1 do
     begin
@@ -832,7 +839,7 @@ procedure TWhisperLib.BindGgml;
     J: Integer;
   begin
     Result := nil;
-    Names := PlatformFileNames(AStem, '0');
+    Names := PlatformFileNames(AStem, '1', '0');
     try
       for J := 0 to Names.Count - 1 do
       begin

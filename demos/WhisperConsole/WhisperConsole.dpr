@@ -138,7 +138,7 @@ const
   { The delivery this console comes from (zip number): printed first, so a
     log shows which build made it. Bumped with every zip that changes the
     library or the console. }
-  CONSOLE_DELIVERY = 32;
+  CONSOLE_DELIVERY = 33;
   { Learned habits listed by --align. }
   ALIGN_LEARNED_SHOWN = 20;
   { Marks an interpolated book word in the --align-labels file. }
