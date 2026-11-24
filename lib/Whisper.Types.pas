@@ -41,7 +41,7 @@ const
   { whisper.cpp version whose whisper.h this binding was checked against
     (tools/verify_layout.py). Other versions work while the checked records
     are unchanged; @code(TWhisperLib.CheckLayout) tells. }
-  WHISPER_BINDING_VERSION = '1.9.5';
+  WHISPER_BINDING_VERSION = '1.9.6';
   { Value of @code(TWhisperParams.Language) that asks whisper.cpp to detect
     the spoken language. }
   WHISPER_LANGUAGE_AUTO = 'auto';
